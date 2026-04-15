@@ -1,0 +1,7 @@
+[build]
+  publish = "h5"
+  
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

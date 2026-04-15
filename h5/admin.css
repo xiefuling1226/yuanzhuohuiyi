@@ -1,0 +1,413 @@
+/* ========== 全局变量 ========== */
+:root {
+  --primary: #5B4A3F;
+  --primary-light: #8B7A6B;
+  --primary-lighter: #D4C5B5;
+  --bg: #FAF7F4;
+  --bg-card: #FFFFFF;
+  --text: #2D2420;
+  --text-light: #8C7E73;
+  --shadow: 0 2px 12px rgba(91, 74, 63, 0.1);
+  --radius: 12px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* ========== 登录层 ========== */
+.login-layer {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.login-box {
+  background: var(--bg-card);
+  border-radius: 20px;
+  padding: 40px 32px;
+  text-align: center;
+  box-shadow: var(--shadow);
+  width: 320px;
+}
+
+.login-box h2 {
+  font-size: 20px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.login-box p {
+  font-size: 13px;
+  color: var(--text-light);
+  margin-bottom: 24px;
+}
+
+.login-box input {
+  width: 100%;
+  border: 1px solid rgba(91, 74, 63, 0.2);
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 15px;
+  outline: none;
+  margin-bottom: 12px;
+  text-align: center;
+  transition: border-color 0.2s;
+}
+
+.login-box input:focus {
+  border-color: var(--primary);
+}
+
+.login-box button {
+  width: 100%;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.login-box button:active {
+  background: var(--primary-light);
+}
+
+.login-error {
+  color: #e74c3c;
+  font-size: 13px;
+  margin-top: 12px;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+/* ========== 主内容 ========== */
+.main-content {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 20px 16px 40px;
+}
+
+/* ========== 头部 ========== */
+.admin-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.admin-header h1 {
+  font-size: 20px;
+  color: var(--text);
+}
+
+.refresh-btn {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.refresh-btn:active {
+  background: var(--primary-light);
+}
+
+/* ========== 统计卡片 ========== */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 600px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px 16px;
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+
+.stat-number {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--primary);
+  line-height: 1.2;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-light);
+  margin-top: 4px;
+}
+
+/* ========== 趋势图 ========== */
+.chart-section {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 24px;
+  box-shadow: var(--shadow);
+}
+
+.chart-section h2 {
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+
+.chart {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-around;
+  height: 180px;
+  padding-top: 20px;
+}
+
+.chart-bar-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+
+.chart-value {
+  font-size: 12px;
+  color: var(--text-light);
+  margin-bottom: 4px;
+}
+
+.chart-bar {
+  width: 32px;
+  background: linear-gradient(to top, var(--primary), var(--primary-light));
+  border-radius: 6px 6px 0 0;
+  transition: height 0.5s ease;
+}
+
+.chart-label {
+  font-size: 11px;
+  color: var(--text-light);
+  margin-top: 8px;
+}
+
+/* ========== 筛选栏 ========== */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.filter-bar h2 {
+  font-size: 15px;
+  color: var(--text);
+}
+
+.filter-controls select {
+  border: 1px solid rgba(91, 74, 63, 0.2);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-card);
+  outline: none;
+  cursor: pointer;
+}
+
+.delete-all-btn {
+  border: 1px solid #e74c3c;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #e74c3c;
+  background: transparent;
+  outline: none;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-left: 8px;
+}
+
+.delete-all-btn:hover {
+  background: #e74c3c;
+  color: white;
+}
+
+/* ========== 对话列表 ========== */
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.session-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+  transition: transform 0.2s;
+}
+
+.session-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(91, 74, 63, 0.15);
+}
+
+.session-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(91, 74, 63, 0.08);
+}
+
+.session-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+  line-height: 1.4;
+  margin-right: 12px;
+}
+
+.session-actions {
+  flex-shrink: 0;
+}
+
+.session-delete-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-light);
+  transition: all 0.2s;
+  opacity: 0.4;
+  padding: 0;
+}
+
+.session-delete-btn:hover {
+  background: rgba(220, 53, 69, 0.1);
+  color: #dc3545;
+  opacity: 1;
+}
+
+.session-meta-info {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.session-meta-info span {
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+.session-stats {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.stat-badge {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+
+.user-badge {
+  background: rgba(52, 152, 219, 0.1);
+  color: #3498db;
+}
+
+.ai-badge {
+  background: rgba(46, 204, 113, 0.1);
+  color: #27ae60;
+}
+
+.total-badge {
+  background: rgba(91, 74, 63, 0.08);
+  color: var(--primary);
+}
+
+.session-time {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.session-meta {
+  font-size: 11px;
+  color: var(--text-light);
+}
+
+.session-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.session-msg {
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 8px 12px;
+  border-radius: 8px;
+  word-break: break-word;
+}
+
+.session-msg strong {
+  font-weight: 600;
+}
+
+.msg-user {
+  background: rgba(91, 74, 63, 0.06);
+  color: var(--text);
+}
+
+.msg-assistant {
+  background: rgba(91, 74, 63, 0.02);
+  color: var(--text-light);
+}
+
+/* ========== 空状态 / 加载 ========== */
+.loading, .empty {
+  text-align: center;
+  padding: 40px;
+  color: var(--text-light);
+  font-size: 14px;
+}
