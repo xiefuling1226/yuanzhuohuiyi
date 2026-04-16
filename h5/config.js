@@ -11,6 +11,6 @@ const CONFIG = {
   temperature: 0.85,
 
   // Supabase
-  supabaseUrl: 'https://rjqabugbscbcdbyxwysk.supabase.co',
-  supabaseKey: 'sb_publishable_XbOddN7lI-OadYa9u7jj4w_4wVvmHsB',
+  supabaseUrl: 'https://mvgpnjvfpckqznzpmskv.supabase.co',
+  supabaseKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12Z3BuanZmcGNrcXpuenBtc2t2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyODA4MjMsImV4cCI6MjA5MTg1NjgyM30.4UAgzGeiyBIEEqqyOn65u4p-BcNn_dZnO5HRDc2-gEY',
 };
