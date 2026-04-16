@@ -1,7 +1,16 @@
 // 名人圆桌会议 H5 - 核心业务逻辑
 
 // ========== 欢迎语 ==========
-const WELCOME_MESSAGE = '你好！我是风玲，圆桌会的主持人。\n\n告诉我你想讨论什么话题，我会为你推荐合适的嘉宾。你也可以点击右上角的 + 号自己挑选名人。\n\n准备好了吗？说出你的问题吧！';
+const SLOGANS = [
+  '以光年为席，聚古今中外智者。',
+  '一席光年，对话全人类的思想星光。',
+  '跨越时空山海，共赴一场光年之约。',
+  '光年之上，思想无界。',
+  '微光聚智，对话光年。',
+  '光年对话・思想无界。'
+];
+
+const WELCOME_MESSAGE = '你好！我是风玲，光年圆桌会的主持人。\n\n告诉我你想讨论什么话题，我会为你推荐合适的嘉宾。你也可以点击右上角的 + 号自己挑选名人。\n\n准备好了吗？说出你的问题吧！';
 
 // ========== 应用状态 ==========
 const state = {
@@ -42,6 +51,7 @@ const menuPauseBtn = document.getElementById('menuPauseBtn');
 const menuPauseText = document.getElementById('menuPauseText');
 const menuRestartBtn = document.getElementById('menuRestartBtn');
 const menuHistoryBtn = document.getElementById('menuHistoryBtn');
+const menuNewMeetingBtn = document.getElementById('menuNewMeetingBtn');
 const menuShareBtn = document.getElementById('menuShareBtn');
 // 暂停横幅
 const pauseBanner = document.getElementById('pauseBanner');
@@ -69,7 +79,11 @@ const stopBtn = document.getElementById('stopBtn');
 
 // ========== 初始化 ==========
 function init() {
-  addSpeakerMessage('风玲', WELCOME_MESSAGE, 'fengling');
+  // 合并 slogan 和欢迎语为一条消息
+  const randomSlogan = SLOGANS[Math.floor(Math.random() * SLOGANS.length)];
+  const combinedMessage = randomSlogan + '\n\n' + WELCOME_MESSAGE;
+  addSpeakerMessage('风玲', combinedMessage, 'fengling');
+  
   buildCelebrityPanel();
   bindEvents();
   messageInput.focus();
@@ -112,6 +126,7 @@ function bindEvents() {
   menuPauseBtn.addEventListener('click', togglePause);
   menuRestartBtn.addEventListener('click', handleRestart);
   menuHistoryBtn.addEventListener('click', openHistoryPanel);
+  menuNewMeetingBtn.addEventListener('click', handleNewMeeting);
   menuShareBtn.addEventListener('click', () => { moreMenu.classList.remove('active'); openShareModal(); });
 
   // 暂停横幅
@@ -1056,8 +1071,13 @@ function doRestart() {
   chatArea.innerHTML = '';
   clearStreamMessages();
 
-  // 保留嘉宾选择，重新显示欢迎语
-  addSpeakerMessage('风玲', WELCOME_MESSAGE, 'fengling');
+  // 保留嘉宾选择，重新显示 slogan 和欢迎语
+  const randomSlogan = SLOGANS[Math.floor(Math.random() * SLOGANS.length)];
+  addSpeakerMessage('风玲', randomSlogan, 'fengling');
+  
+  setTimeout(() => {
+    addSpeakerMessage('风玲', WELCOME_MESSAGE, 'fengling');
+  }, 800);
 
   if (state.selectedCelebrities.length > 0) {
     headerSubtitle.textContent = `${state.selectedCelebrities.length} 位嘉宾就座`;
@@ -1153,6 +1173,21 @@ function openHistoryPanel() {
 function closeHistoryPanel() {
   historyPanel.classList.remove('active');
   panelOverlay.classList.remove('active');
+}
+
+function handleNewMeeting() {
+  moreMenu.classList.remove('active');
+  closeHistoryPanel();
+  
+  // 没有对话内容就直接重置
+  if (state.messages.length === 0) {
+    doRestart();
+    return;
+  }
+  
+  showConfirm('新建会议', '当前对话将保存到历史记录，并开始新的会议。确定吗？', () => {
+    doRestart();
+  });
 }
 
 function renderHistoryList() {

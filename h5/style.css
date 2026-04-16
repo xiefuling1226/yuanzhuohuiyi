@@ -67,12 +67,13 @@ body {
   gap: 10px;
 }
 
-.header-avatar {
-  width: 40px;
-  height: 40px;
+.header-logo {
+  width: 36px !important;
+  height: 36px !important;
   border-radius: 50%;
   object-fit: cover;
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .header-text h1 {

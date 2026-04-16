@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>风玲圆桌会</title>
+  <title>光年圆桌会</title>
 
   <!-- 分享Meta标签 -->
-  <meta name="description" content="风玲圆桌会 — 邀请历史名人围桌讨论你的问题，多角度思维碰撞，获得可操作方案。">
-  <meta property="og:title" content="风玲圆桌会">
+  <meta name="description" content="光年圆桌会 — 邀请历史名人围桌讨论你的问题，多角度思维碰撞，获得可操作方案。">
+  <meta property="og:title" content="光年圆桌会">
   <meta property="og:description" content="邀请孔子、老子、乔布斯等名人围桌讨论你的问题">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
@@ -15,19 +15,19 @@
   <!-- 苹果设备适配 -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="风玲圆桌会">
+  <meta name="apple-mobile-web-app-title" content="光年圆桌会">
   <meta name="theme-color" content="#5B4A3F">
 
-  <link rel="stylesheet" href="style.css?v=12">
+  <link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
   <div id="app">
     <!-- 顶部栏 -->
     <header class="header">
       <div class="header-left">
-        <img class="header-avatar" src="fengling-avatar.png" alt="风玲">
+        <img class="header-logo" src="logo.png" alt="光年圆桌会">
         <div class="header-text">
-          <h1>风玲圆桌会</h1>
+          <h1>光年圆桌会</h1>
           <p class="header-subtitle" id="headerSubtitle">点击右侧 + 邀请嘉宾</p>
         </div>
       </div>
@@ -63,6 +63,13 @@
                 <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
               </svg>
               <span>历史会议</span>
+            </button>
+            <div class="more-menu-divider"></div>
+            <button class="more-menu-item" id="menuNewMeetingBtn">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+              </svg>
+              <span>新建会议</span>
             </button>
             <div class="more-menu-divider"></div>
             <button class="more-menu-item" id="menuShareBtn">
@@ -142,7 +149,7 @@
     <div class="modal-overlay" id="shareModal">
       <div class="modal">
         <h3>分享给朋友</h3>
-        <p>邀请更多人体验名人圆桌会议</p>
+        <p>邀请更多人体验光年圆桌会</p>
         <div class="share-link-box">
           <input type="text" id="shareLink" readonly>
           <button id="copyLinkBtn">复制</button>
