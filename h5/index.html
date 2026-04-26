@@ -3,36 +3,43 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>光年圆桌会</title>
+  <!-- 禁用缓存，确保加载最新代码 -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>光年之约圆桌会</title>
 
   <!-- 分享Meta标签 -->
-  <meta name="description" content="光年圆桌会 — 邀请历史名人围桌讨论你的问题，多角度思维碰撞，获得可操作方案。">
-  <meta property="og:title" content="光年圆桌会">
-  <meta property="og:description" content="邀请孔子、老子、乔布斯等名人围桌讨论你的问题">
+  <meta name="description" content="光年之约圆桌会 — 邀请历史人物围桌讨论你的问题，多角度思维碰撞，获得可操作方案。">
+  <meta property="og:title" content="光年之约圆桌会">
+  <meta property="og:description" content="邀请孔子、老子、乔布斯等参会人员围桌讨论你的问题">
   <meta property="og:type" content="website">
   <meta name="twitter:card" content="summary_large_image">
 
   <!-- 苹果设备适配 -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
-  <meta name="apple-mobile-web-app-title" content="光年圆桌会">
+  <meta name="apple-mobile-web-app-title" content="光年之约圆桌会">
   <meta name="theme-color" content="#5B4A3F">
 
-  <link rel="stylesheet" href="style.css?v=13">
+  <link rel="stylesheet" href="style.css?v=23">
 </head>
 <body>
+  <!-- 引入语音模块 -->
+  <script src="voice.js?v=15"></script>
+  
   <div id="app">
     <!-- 顶部栏 -->
     <header class="header">
       <div class="header-left">
-        <img class="header-logo" src="logo.png" alt="光年圆桌会">
+        <img class="header-logo" src="logo.png" alt="光年之约圆桌会">
         <div class="header-text">
-          <h1>光年圆桌会</h1>
+          <h1>光年之约圆桌会</h1>
           <p class="header-subtitle" id="headerSubtitle">点击右侧 + 邀请嘉宾</p>
         </div>
       </div>
       <div class="header-actions">
-        <button class="action-btn" id="selectCelebrityBtn" title="选择名人">
+        <button class="action-btn" id="selectCelebrityBtn" title="选择参会人员">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -102,6 +109,19 @@
     <main class="chat-area" id="chatArea">
       <!-- 消息由JS插入 -->
     </main>
+    <!-- 回到顶部浮动按钮 -->
+    <button class="scroll-to-top-btn" id="scrollToTopBtn" aria-label="回到顶部" style="display: none;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="18 15 12 9 6 15"></polyline>
+      </svg>
+    </button>
+    <!-- 回到底部浮动按钮 -->
+    <button class="scroll-to-bottom-btn" id="scrollToBottomBtn" aria-label="回到最新消息" style="display: none;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="6 9 12 15 18 9"></polyline>
+      </svg>
+      <span class="new-msg-dot" id="newMsgDot"></span>
+    </button>
 
     <!-- 输入区域 -->
     <footer class="input-area">
@@ -126,18 +146,18 @@
       </div>
     </footer>
 
-    <!-- 名人选择面板 -->
+    <!-- 参会人员选择面板 -->
     <div class="panel-overlay" id="panelOverlay"></div>
     <div class="celebrity-panel" id="celebrityPanel">
       <div class="panel-header">
         <h2>邀请嘉宾</h2>
         <div class="panel-search">
-          <input type="text" id="searchInput" placeholder="搜索名人...">
+          <input type="text" id="searchInput" placeholder="搜索参会人员...">
         </div>
         <button class="panel-close" id="panelCloseBtn">&times;</button>
       </div>
       <div class="panel-body" id="panelBody">
-        <!-- 按领域分类的名人列表由JS动态生成 -->
+        <!-- 按领域分类的参会人员列表由JS动态生成 -->
       </div>
       <div class="panel-footer">
         <span class="selected-count" id="selectedCount">已选 0 位嘉宾</span>
@@ -149,7 +169,7 @@
     <div class="modal-overlay" id="shareModal">
       <div class="modal">
         <h3>分享给朋友</h3>
-        <p>邀请更多人体验光年圆桌会</p>
+        <p>邀请更多人体验光年之约圆桌会</p>
         <div class="share-link-box">
           <input type="text" id="shareLink" readonly>
           <button id="copyLinkBtn">复制</button>
@@ -198,10 +218,14 @@
     </div>
   </div>
 
-  <script src="config.js?v=7"></script>
-  <script src="celebrities.js?v=8"></script>
-  <script src="prompt.js?v=9"></script>
-  <script src="supabase.js?v=7"></script>
-  <script src="app.js?v=16"></script>
+  <!-- 可分享/可部署：仓库默认不含密钥。未上传 config.local.js 时上面一行会初始化空对象，不阻断页面。本地密钥见 config.example.local.js -->
+  <script>window.ROUND_TABLE_SECRETS = window.ROUND_TABLE_SECRETS || {};</script>
+  <script src="config.local.js?v=1"></script>
+  <script src="config.js?v=10"></script>
+  <script src="celebrities.js?v=11"></script>
+  <script src="search.js?v=6"></script>
+  <script src="prompt.js?v=39"></script>
+  <script src="supabase.js?v=6"></script>
+  <script src="app.js?v=91"></script>
 </body>
 </html>

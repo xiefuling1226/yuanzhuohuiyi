@@ -8,23 +8,20 @@ SKILLS_DIR = os.path.join(BASE, '.qoder', 'skills')
 OUTPUT = os.path.join(BASE, 'h5', 'celebrities.js')
 
 DOMAIN_MAP = {
-    '哲学与思想': ['kongzi','laozi','zhuangzi','wang-yangming','mozi','hanfeizi','socrates','plato','aristotle','nietzsche','hegel','kant','marx'],
-    '商业与创业': ['ren-zhengfei','steve-jobs','cao-dewang','zhang-yiming','jack-ma','inamori-kazuo','matsushita-konosuke','elon-musk','warren-buffett','jeff-bezos','bill-gates','sam-walton'],
-    '科学与技术': ['zhang-heng','zu-chongzhi','qian-xuesen','tu-youyou','yuan-longping','isaac-newton','albert-einstein','leonardo-da-vinci','alan-turing','richard-feynman','nikola-tesla','charles-darwin'],
+    '哲学与思想': ['kongzi','laozi','zhuangzi','wang-yangming','mozi','hanfeizi','socrates','plato','aristotle','nietzsche','hegel','kant','marx','luo-xiang','jiang-haisong','zeng-shiqiang','han-wangxi','yu-dan','fu-peirong'],
+    '商业与创业': ['ren-zhengfei','steve-jobs','cao-dewang','zhang-yiming','jack-ma','inamori-kazuo','matsushita-konosuke','elon-musk','warren-buffett','jeff-bezos','bill-gates','sam-walton','peter-drucker','liu-run','hua-shan','cai-yue','liang-ning','wu-bofan'],
+    '科学与技术': ['zhang-heng','zu-chongzhi','qian-xuesen','tu-youyou','yuan-longping','isaac-newton','albert-einstein','leonardo-da-vinci','alan-turing','richard-feynman','nikola-tesla','charles-darwin','wu-jun'],
     '政治与军事': ['sunzi','zhuge-liang','cao-cao','li-shimin','liu-bang','mao-zedong','qin-shihuang','wu-zetian','sima-guang','winston-churchill','abraham-lincoln','napoleon','julius-caesar','gandhi','nelson-mandela','donald-trump'],
-    '文学与艺术': ['su-shi','lu-xun','li-bai','cao-xueqin','wang-xizhi','lin-yutang','sima-qian','luo-guanzhong','shi-naian','wu-chengen','wu-guanzhong','william-shakespeare','ludwig-van-beethoven','pablo-picasso','leo-tolstoy','vincent-van-gogh','ernest-hemingway'],
-    '心理学与人文': ['sigmund-freud','carl-jung','alfred-adler','abraham-maslow','viktor-frankl'],
-    '经济与金融': ['adam-smith','john-maynard-keynes','charlie-munger','ray-dalio','nassim-taleb','peter-drucker','xue-zhaofeng'],
-    '知识传播与咨询': ['luo-zhenyu','liu-run','hua-shan','wu-bofan','liang-ning','cai-yue'],
-    '教育与成长': ['maria-montessori','tao-xingzhi','john-dewey','zhang-xuefeng'],
-    '生命科学': ['wu-jun','wang-liming','yin-ye'],
+    '文学与艺术': ['su-shi','lu-xun','li-bai','cao-xueqin','wang-xizhi','lin-yutang','sima-qian','luo-guanzhong','shi-naian','wu-chengen','wu-guanzhong','william-shakespeare','ludwig-van-beethoven','pablo-picasso','leo-tolstoy','vincent-van-gogh','ernest-hemingway','liu-yong','yi-zhongtian','jiang-xun','feng-tang','dang-nian-mingyue','liu-cixin'],
+    '心理学与教育': ['sigmund-freud','carl-jung','alfred-adler','abraham-maslow','viktor-frankl','li-meijin','wu-zhihong','maria-montessori','tao-xingzhi','john-dewey','zhang-xuefeng','fan-deng'],
+    '经济与金融': ['adam-smith','john-maynard-keynes','charlie-munger','ray-dalio','nassim-taleb','xue-zhaofeng','luo-zhenyu'],
+    '生命科学与健康': ['wang-liming','yin-ye','zhai-shuangqing','xu-wenbing'],
 }
 
 DOMAIN_COLORS = {
     '哲学与思想': '#8B6F5C', '商业与创业': '#4A7C6F', '科学与技术': '#4A6A8B',
-    '政治与军事': '#8B5C5C', '文学与艺术': '#6B5C8B', '心理学与人文': '#5C7A5C',
-    '经济与金融': '#8B7A4A', '知识传播与咨询': '#5C6B8B', '教育与成长': '#7A5C7A',
-    '生命科学': '#4A8B7A',
+    '政治与军事': '#8B5C5C', '文学与艺术': '#6B5C8B', '心理学与教育': '#5C7A5C',
+    '经济与金融': '#8B7A4A', '生命科学与健康': '#4A8B7A',
 }
 
 def find_domain(name):

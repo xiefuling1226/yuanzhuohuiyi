@@ -38,6 +38,148 @@ body {
   line-height: 1.6;
 }
 
+/* 隐藏顶部语音按钮 */
+#voiceToggleBtn {
+  display: none;
+}
+
+/* 消息正在语音播放时的高亮效果 */
+.message.voice-playing {
+  background: rgba(196, 154, 108, 0.08);
+  transition: background 0.3s ease;
+}
+
+.message.voice-playing .message-bubble {
+  box-shadow: 0 0 0 2px rgba(196, 154, 108, 0.3);
+}
+
+/* 消息操作按钮容器 - 完成后可悬停显示 */
+.message-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+  justify-content: flex-end;
+  align-items: center;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+/* 消息已完成：默认隐藏，悬停时显示 */
+.message-actions.show {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.message.assistant:hover .message-actions.show,
+.message.assistant:focus-within .message-actions.show {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* 触屏设备无 hover，默认显示 */
+@media (hover: none) {
+  .message-actions.show {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
+}
+
+.message-time {
+  font-size: 11px;
+  color: #a9a19a;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  margin-right: 2px;
+}
+
+/* 消息操作按钮 - 豆包风格 */
+.msg-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #999;
+  transition: all 0.2s;
+  width: 24px;
+  height: 24px;
+}
+
+.msg-action-btn:hover {
+  background: #f0f0f0;
+  color: #666;
+}
+
+.msg-action-btn svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* 隐藏文字，只显示图标 */
+.msg-action-btn span {
+  display: none;
+}
+
+/* 语音按钮播放中状态 - 动态波形效果 */
+.msg-voice-btn.playing {
+  color: var(--accent);
+  background: rgba(196, 154, 108, 0.1);
+}
+
+.msg-voice-btn.playing svg {
+  animation: soundWave 1s ease-in-out infinite;
+}
+
+@keyframes soundWave {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+}
+
+/* 复制按钮已复制状态 */
+.msg-copy-btn.copied {
+  color: #2ecc71;
+}
+
+/* 豆包风格的toast提示 */
+.copy-toast {
+  position: fixed;
+  bottom: 100px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 14px;
+  z-index: 9999;
+  animation: toastIn 0.3s ease;
+  pointer-events: none;
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
 #app {
   display: flex;
   flex-direction: column;
@@ -45,8 +187,9 @@ body {
   height: 100dvh;
   max-width: 520px;
   margin: 0 auto;
+  position: relative; /* 承载回到底部按钮的绝对定位 */
+  min-height: 0; /* 子项 flex:1 区域可收缩，配合 chat-area 内部滚动 */
   background: var(--bg);
-  position: relative;
 }
 
 /* ========== 顶部栏 ========== */
@@ -119,18 +262,46 @@ body {
   flex-shrink: 0;
   padding: 8px 16px;
   min-height: 48px;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .guest-scroll {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
   align-items: center;
   min-height: 32px;
+  width: max-content;
 }
 
 .guest-scroll::-webkit-scrollbar {
-  display: none;
+  height: 4px;
+}
+
+.guest-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.guest-scroll::-webkit-scrollbar-thumb {
+  background: rgba(91, 74, 63, 0.2);
+  border-radius: 2px;
+  transition: background 0.3s ease;
+}
+
+.guest-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(91, 74, 63, 0.4);
+}
+
+/* 默认隐藏滚动条，滚动或悬停时显示 */
+.guest-bar {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.guest-bar:hover,
+.guest-bar:active {
+  scrollbar-color: rgba(91, 74, 63, 0.3) transparent;
 }
 
 /* 空状态提示 */
@@ -252,11 +423,14 @@ body {
 /* ========== 对话区域 ========== */
 .chat-area {
   flex: 1;
+  min-height: 0; /* 允许在 flex 列布局中收缩，否则长对话时内部无法独立滚动 */
   overflow-y: auto;
   padding: 16px;
   background: var(--bg-chat);
-  scroll-behavior: smooth;
+  scroll-behavior: auto; /* 流式输出时频繁滚底，避免 smooth 与用户上滑抢滚动 */
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 /* ========== 消息气泡 ========== */
@@ -317,9 +491,110 @@ body {
 .message-bubble {
   padding: 12px 16px;
   border-radius: var(--radius);
-  line-height: 1.7;
+  line-height: 1.85;
   word-break: break-word;
-  white-space: pre-wrap;
+  white-space: normal;
+}
+
+.message-bubble .rt-h2 {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.45;
+  margin: 2px 0 10px;
+}
+
+.message-bubble .rt-h3 {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  margin: 2px 0 8px;
+}
+
+.message-bubble .rt-p {
+  font-size: 15px;
+  line-height: 1.9;
+  margin: 0 0 10px;
+  letter-spacing: 0.1px;
+}
+
+.message-bubble .rt-li {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: 15px;
+  line-height: 1.85;
+  margin: 0 0 7px;
+}
+
+.message-bubble .rt-num,
+.message-bubble .rt-dot {
+  color: #8d7b6d;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.message-bubble .rt-gap {
+  height: 12px;
+}
+
+/* Markdown 风格管道表（会内/总结中常见 GFM 表格） */
+.message-bubble .rt-table-wrap {
+  margin: 10px 0 12px;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 8px;
+  background: rgba(91, 74, 63, 0.04);
+}
+.message-bubble .rt-md-table {
+  width: 100%;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.55;
+  table-layout: auto;
+}
+.message-bubble .rt-md-table th,
+.message-bubble .rt-md-table td {
+  border: 1px solid rgba(91, 74, 63, 0.18);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+  hyphens: auto;
+  min-width: 5em;
+}
+.message-bubble .rt-md-table th {
+  background: rgba(91, 74, 63, 0.09);
+  font-weight: 700;
+  color: #3d332c;
+  white-space: normal;
+}
+.message.user .message-bubble .rt-table-wrap {
+  background: rgba(255, 255, 255, 0.12);
+}
+.message.user .message-bubble .rt-md-table th,
+.message.user .message-bubble .rt-md-table td {
+  border-color: rgba(255, 255, 255, 0.4);
+  color: var(--white);
+}
+.message.user .message-bubble .rt-md-table th {
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--white);
+}
+
+.message-bubble strong {
+  font-weight: 700;
+  color: #3d332c;
+}
+
+.message-bubble code {
+  background: rgba(91, 74, 63, 0.08);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
 }
 
 .message.assistant .message-bubble {
@@ -369,6 +644,82 @@ body {
 @keyframes typingBounce {
   0%, 60%, 100% { transform: translateY(0); }
   30% { transform: translateY(-6px); }
+}
+
+/* ========== 回到顶部浮动按钮 ========== */
+.scroll-to-top-btn {
+  position: absolute;
+  right: 16px;
+  bottom: 146px; /* 位于"回到底部"按钮上方 */
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--white);
+  border: 1px solid rgba(91, 74, 63, 0.15);
+  box-shadow: 0 4px 14px rgba(91, 74, 63, 0.18);
+  color: #5b4a3f;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 50;
+  transition: transform 0.15s ease, opacity 0.2s ease;
+  padding: 0;
+}
+.scroll-to-top-btn.show {
+  display: flex;
+  animation: fadeInUp 0.18s ease;
+}
+.scroll-to-top-btn:hover { transform: translateY(-1px); }
+.scroll-to-top-btn:active { transform: translateY(0) scale(0.96); }
+
+/* ========== 回到底部浮动按钮 ========== */
+.scroll-to-bottom-btn {
+  position: absolute;
+  right: 16px;
+  bottom: 96px; /* 位于输入框上方 */
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--white);
+  border: 1px solid rgba(91, 74, 63, 0.15);
+  box-shadow: 0 4px 14px rgba(91, 74, 63, 0.18);
+  color: #5b4a3f;
+  display: none; /* 默认隐藏，JS 按需显示 */
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 50;
+  transition: transform 0.15s ease, opacity 0.2s ease;
+  padding: 0;
+}
+.scroll-to-bottom-btn.show {
+  display: flex;
+  animation: fadeInUp 0.18s ease;
+}
+.scroll-to-bottom-btn:hover {
+  transform: translateY(-1px);
+}
+.scroll-to-bottom-btn:active {
+  transform: translateY(0) scale(0.96);
+}
+.scroll-to-bottom-btn .new-msg-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  background: #e25555;
+  border-radius: 50%;
+  display: none;
+  border: 2px solid var(--white);
+}
+.scroll-to-bottom-btn.has-new .new-msg-dot {
+  display: block;
+}
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* ========== 输入区域 ========== */
@@ -470,7 +821,7 @@ body {
   opacity: 0.7;
 }
 
-/* ========== 名人选择面板 ========== */
+/* ========== 参会人员选择面板 ========== */
 .panel-overlay {
   position: fixed;
   inset: 0;

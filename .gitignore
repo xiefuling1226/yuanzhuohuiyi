@@ -18,6 +18,10 @@ Thumbs.db
 .env
 .env.local
 
+# 仅本机的 API / Supabase 密钥（从 config.example.local.js 复制为 config.local.js）
+h5/config.local.js
+deploy-gitee/config.local.js
+
 # Build output
 dist/
 build/
