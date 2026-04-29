@@ -188,8 +188,8 @@ body {
   max-width: 520px;
   margin: 0 auto;
   position: relative; /* 承载回到底部按钮的绝对定位 */
+  min-height: 0; /* 子项 flex:1 区域可收缩，配合 chat-area 内部滚动 */
   background: var(--bg);
-  position: relative;
 }
 
 /* ========== 顶部栏 ========== */
@@ -423,11 +423,14 @@ body {
 /* ========== 对话区域 ========== */
 .chat-area {
   flex: 1;
+  min-height: 0; /* 允许在 flex 列布局中收缩，否则长对话时内部无法独立滚动 */
   overflow-y: auto;
   padding: 16px;
   background: var(--bg-chat);
-  scroll-behavior: smooth;
+  scroll-behavior: auto; /* 流式输出时频繁滚底，避免 smooth 与用户上滑抢滚动 */
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+  overscroll-behavior: contain;
 }
 
 /* ========== 消息气泡 ========== */
@@ -532,6 +535,53 @@ body {
 
 .message-bubble .rt-gap {
   height: 12px;
+}
+
+/* Markdown 风格管道表（会内/总结中常见 GFM 表格） */
+.message-bubble .rt-table-wrap {
+  margin: 10px 0 12px;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 8px;
+  background: rgba(91, 74, 63, 0.04);
+}
+.message-bubble .rt-md-table {
+  width: 100%;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  line-height: 1.55;
+  table-layout: auto;
+}
+.message-bubble .rt-md-table th,
+.message-bubble .rt-md-table td {
+  border: 1px solid rgba(91, 74, 63, 0.18);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  word-break: break-word;
+  hyphens: auto;
+  min-width: 5em;
+}
+.message-bubble .rt-md-table th {
+  background: rgba(91, 74, 63, 0.09);
+  font-weight: 700;
+  color: #3d332c;
+  white-space: normal;
+}
+.message.user .message-bubble .rt-table-wrap {
+  background: rgba(255, 255, 255, 0.12);
+}
+.message.user .message-bubble .rt-md-table th,
+.message.user .message-bubble .rt-md-table td {
+  border-color: rgba(255, 255, 255, 0.4);
+  color: var(--white);
+}
+.message.user .message-bubble .rt-md-table th {
+  background: rgba(0, 0, 0, 0.12);
+  color: var(--white);
 }
 
 .message-bubble strong {
@@ -1076,6 +1126,249 @@ body {
   opacity: 1;
 }
 
+.modal-wechat-share {
+  text-align: left;
+}
+
+.modal-wechat-share > .modal-close {
+  margin-top: 4px;
+}
+
+.modal-wechat-share h3 {
+  text-align: center;
+}
+
+.modal-wechat-lead {
+  font-size: 13px;
+  color: var(--text-light);
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.modal-wechat-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.modal-wechat-step {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.55;
+}
+
+.modal-wechat-step strong {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--primary);
+  font-size: 14px;
+}
+
+.modal-wechat-step span {
+  color: var(--text-light);
+}
+
+.modal-wechat-step em {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.modal-wechat-note {
+  font-size: 12px;
+  color: var(--text-light);
+  margin-bottom: 8px;
+  line-height: 1.45;
+}
+
+/* ========== 分享对话 · 公众号样式面板 ========== */
+.conversation-share-sheet {
+  position: relative;
+  text-align: left;
+  max-width: 380px;
+  padding: 22px 20px 18px;
+}
+
+.share-sheet-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  border: none;
+  background: transparent;
+  font-size: 24px;
+  line-height: 1;
+  color: var(--text-light);
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.share-sheet-heading {
+  font-size: 17px;
+  color: var(--text);
+  margin: 0 0 14px;
+  padding-right: 28px;
+}
+
+.share-sheet-preview {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.share-sheet-thumb {
+  flex-shrink: 0;
+  border-radius: 10px;
+  object-fit: contain;
+  background: rgba(91, 74, 63, 0.06);
+}
+
+.share-sheet-preview-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-sheet-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.share-sheet-desc {
+  font-size: 12px;
+  color: var(--text-light);
+  margin: 6px 0 0;
+  line-height: 1.45;
+}
+
+.share-sheet-link-row {
+  margin-bottom: 14px;
+}
+
+.share-sheet-link-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(91, 74, 63, 0.18);
+  border-radius: 10px;
+  padding: 10px 11px;
+  font-size: 11px;
+  color: var(--text-light);
+  background: var(--bg);
+  outline: none;
+}
+
+.share-sheet-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.share-sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(91, 74, 63, 0.12);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.share-sheet-row:active {
+  background: rgba(91, 74, 63, 0.06);
+}
+
+.share-sheet-row-icon {
+  font-size: 22px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.share-sheet-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.share-sheet-row-label {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.share-sheet-row-hint {
+  font-size: 12px;
+  color: var(--text-light);
+  line-height: 1.35;
+}
+
+.share-sheet-copy-btn {
+  margin-top: 2px;
+  width: 100%;
+  border: none;
+  border-radius: 12px;
+  padding: 11px;
+  font-size: 14px;
+  font-weight: 600;
+  background: var(--primary);
+  color: #fff;
+  cursor: pointer;
+}
+
+.share-sheet-copy-btn:active {
+  opacity: 0.92;
+}
+
+.share-sheet-footnote {
+  margin: 14px 0 0;
+  font-size: 11px;
+  color: var(--text-light);
+  line-height: 1.45;
+}
+
+/* ========== 分享的对话（链接打开） ========== */
+.share-view-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin: 0;
+  background: linear-gradient(135deg, rgba(91, 74, 63, 0.09), rgba(91, 74, 63, 0.04));
+  border-bottom: 1px solid rgba(91, 74, 63, 0.1);
+}
+
+.share-view-banner-text {
+  font-size: 13px;
+  color: var(--text);
+  flex: 1;
+  min-width: 140px;
+}
+
+.share-view-banner-btn {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--primary);
+  color: #fff;
+  cursor: pointer;
+}
+
+.share-view-mode .chat-area {
+  padding-bottom: 8px;
+}
+
 .modal-close {
   border: none;
   background: var(--bg);
@@ -1089,165 +1382,6 @@ body {
 
 .modal-close:active {
   background: var(--primary-lighter);
-}
-
-.settings-modal {
-  width: min(92%, 420px);
-  max-width: 420px;
-  padding: 22px 20px 18px;
-  text-align: left;
-}
-
-.settings-modal-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.settings-modal-header h3 {
-  margin-bottom: 6px;
-}
-
-.settings-modal-header p {
-  margin-bottom: 0;
-  line-height: 1.5;
-}
-
-.settings-close-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: var(--bg);
-  color: var(--text-light);
-  border-radius: 10px;
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.settings-close-btn:active {
-  background: var(--primary-lighter);
-}
-
-.settings-section {
-  padding: 14px 0;
-}
-
-.settings-section + .settings-section {
-  border-top: 1px solid rgba(91, 74, 63, 0.08);
-}
-
-.settings-section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.settings-current {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--primary);
-  background: rgba(91, 74, 63, 0.08);
-  padding: 4px 10px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-
-.settings-tip {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-light);
-  margin-bottom: 12px;
-}
-
-.settings-option-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.settings-option {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 14px;
-  border: 1px solid rgba(91, 74, 63, 0.12);
-  border-radius: 14px;
-  background: var(--bg);
-  cursor: pointer;
-  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
-}
-
-.settings-option:has(input:checked) {
-  border-color: var(--accent);
-  background: rgba(196, 154, 108, 0.1);
-  box-shadow: 0 4px 16px rgba(91, 74, 63, 0.08);
-}
-
-.settings-option input {
-  margin-top: 2px;
-  accent-color: var(--primary);
-}
-
-.settings-option-body {
-  flex: 1;
-  min-width: 0;
-}
-
-.settings-option-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 4px;
-}
-
-.settings-option-desc {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text-light);
-}
-
-.settings-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 6px;
-}
-
-.settings-secondary-btn,
-.settings-primary-btn {
-  flex: 1;
-  border: none;
-  border-radius: 12px;
-  padding: 11px 14px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-
-.settings-secondary-btn {
-  background: var(--bg);
-  color: var(--text-light);
-}
-
-.settings-secondary-btn:active {
-  background: var(--primary-lighter);
-}
-
-.settings-primary-btn {
-  background: var(--primary);
-  color: var(--white);
-}
-
-.settings-primary-btn:active {
-  background: var(--primary-light);
 }
 
 /* ========== 桌面端适配 ========== */
@@ -1349,8 +1483,14 @@ body {
 
 .more-menu-divider {
   height: 1px;
-  background: rgba(91, 74, 63, 0.08);
+  flex-shrink: 0;
+  background: rgba(91, 74, 63, 0.12);
   margin: 0;
+}
+
+.more-menu-group {
+  display: flex;
+  flex-direction: column;
 }
 
 /* ========== 暂停状态 ========== */

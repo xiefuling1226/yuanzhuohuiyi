@@ -1,76 +1,34 @@
-// 名人圆桌会议 H5 - API 配置
-
-const APP_STORAGE_KEYS = {
-  model: 'roundtable_model',
-  meetingFlowMode: 'roundtable_meeting_flow_mode',
-};
-
-const FREE_MODEL_OPTIONS = [
-  {
-    value: 'deepseek-chat',
-    label: 'DeepSeek Chat',
-    description: '响应更均衡，适合日常圆桌讨论与观点展开。',
-  },
-  {
-    value: 'deepseek-reasoner',
-    label: 'DeepSeek Reasoner',
-    description: '推理更强，适合复杂议题的拆解、比较与延展。',
-  },
-];
-
-const HOSTED_MEETING_MODE_OPTIONS = [
-  {
-    value: 'three-round',
-    label: '三轮会谈模式',
-    description: '固定三阶段推进，默认使用这一模式组织主持型会议。',
-  },
-  {
-    value: 'host-relay',
-    label: '主持人衔接模式',
-    description: '由主持人根据讨论充分度动态衔接推进，不固定为三轮。',
-  },
-];
-
-function readStoredOption(key, fallback, validValues) {
-  try {
-    const value = localStorage.getItem(key);
-    return validValues.includes(value) ? value : fallback;
-  } catch (error) {
-    return fallback;
-  }
-}
-
-const DEFAULT_MODEL = 'deepseek-chat';
-const DEFAULT_MEETING_FLOW_MODE = 'three-round';
+// 光年之约圆桌会 — 可提交到公开仓库的默认配置（apiKey 等为空，任何人克隆都能打开页面，对话前需自填密钥）
+// 仅本机的密钥二选一，勿提交到公开仓库：
+//  (1) 同目录下复制 config.example.local.js 为 config.local.js 并填写（已在 .gitignore，适合分享「代码」不分享「密钥」）
+//  (2) 在 index.html 里、在本文件之前用内联 <script> 设置 window.ROUND_TABLE_SECRETS
+// 发布到 Gitee 等：把含密钥的 config.local.js 与页面一起上传，或仅在服务器上编辑、勿 push 到公开库
+//
+// DeepSeek 官方 API 没有「换一个 model 就永久免费」的档位，按 token 计费；仅账户有赠送余额时可 0 元试用。
+// 省钱/用赠金：保持 deepseek-v4-flash（勿用 deepseek-v4-pro）。旧名 deepseek-chat 多为兼容别名，一般不更便宜。
 
 const CONFIG = {
-  // DeepSeek API
   apiEndpoint: 'https://api.deepseek.com/v1/chat/completions',
-  apiKey: 'sk-26ca4b36df41403eb7ce144c0f796ceb',
-  model: readStoredOption(
-    APP_STORAGE_KEYS.model,
-    DEFAULT_MODEL,
-    FREE_MODEL_OPTIONS.map(item => item.value)
-  ),
+  apiKey: '',
+  /** V4 入门档（最便宜）；官方无单独「免费」模型名 */
+  model: 'deepseek-v4-flash',
 
-  // 圆桌设置
-  defaultModel: DEFAULT_MODEL,
-  defaultMeetingFlowMode: DEFAULT_MEETING_FLOW_MODE,
-  meetingFlowMode: readStoredOption(
-    APP_STORAGE_KEYS.meetingFlowMode,
-    DEFAULT_MEETING_FLOW_MODE,
-    HOSTED_MEETING_MODE_OPTIONS.map(item => item.value)
-  ),
-  freeModelOptions: FREE_MODEL_OPTIONS,
-  hostedMeetingModeOptions: HOSTED_MEETING_MODE_OPTIONS,
-  storageKeys: APP_STORAGE_KEYS,
-
-  // 对话参数
   maxHistoryRounds: 15,
   temperature: 0.85,
-  max_tokens: 4000,  // 增加最大输出长度，防止推荐嘉宾时被截断
+  /** 普通会中回复上限；总结报告需更长输出 */
+  max_tokens: 4000,
+  /** 用户确认结束后的「会议总结报告」专稿，尽量给足输出空间，避免半截截断 */
+  summaryMaxTokens: 8192,
 
-  // Supabase
   supabaseUrl: 'https://mvgpnjvfpckqznzpmskv.supabase.co',
-  supabaseKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im12Z3BuanZmcGNrcXpuenBtc2t2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzYyODA4MjMsImV4cCI6MjA5MTg1NjgyM30.4UAgzGeiyBIEEqqyOn65u4p-BcNn_dZnO5HRDc2-gEY',
+  supabaseKey: '',
 };
+
+if (typeof window !== 'undefined' && window.ROUND_TABLE_SECRETS) {
+  const s = window.ROUND_TABLE_SECRETS;
+  if (s.apiKey) CONFIG.apiKey = s.apiKey;
+  if (s.supabaseKey) CONFIG.supabaseKey = s.supabaseKey;
+  if (s.apiEndpoint) CONFIG.apiEndpoint = s.apiEndpoint;
+  if (s.supabaseUrl) CONFIG.supabaseUrl = s.supabaseUrl;
+  if (s.model) CONFIG.model = s.model;
+}

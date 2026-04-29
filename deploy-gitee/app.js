@@ -10,38 +10,115 @@ const SLOGANS = [
   '光年对话・思想无界。'
 ];
 
-const WELCOME_MESSAGE = '你好！我是风玲，光年之外圆桌会的主持人。\n\n告诉我你想讨论什么话题，我会为你推荐合适的嘉宾。你也可以点击右上角的 + 号自己挑选参会人员。\n\n准备好了吗？说出你的问题吧！';
+const WELCOME_MESSAGE = '你好！我是风玲，光年之外圆桌会的主持人。\n\n告诉我你想讨论什么话题，我会为你推荐合适的嘉宾并主持会议。你也可以点击右上角的 + 号自己挑选名人自己组织会议。\n\n准备好了吗？说出你的问题吧！';
+
+/** 第三段按流程图经 LLM 判型后硬注入。D=结束 A=点名 B=有问无点名 C=只续谈 U=不明 */
+const FLOWCHART_MSG = {
+  D: '[系统通知]【流程图D】用户同意结束/作会议总结。本**唯一本条**回复内，【风玲】**一次性**输出**完整**会议总结报告（勿留「下一回合再续写」、勿分多轮补全）；无嘉宾【】段；总结后会议结束。',
+  // A 见 buildFlowchartMsgA（须写入用户点名的嘉宾子集与「风玲收尾再邀用户」闭环）
+  B: '[系统通知]【流程图B】用户有具体问题但没说谁答。风玲在【】**只**点**合计不超过两人**、先后说清即可（可一人深讲+另一人短补），**禁止**按名单顺序让在场嘉宾**各**整一段表态。随后【风玲】把话筒交还用户或再征求收束/总结。',
+  C: '[系统通知]【流程图C】用户主诉求是再聊/继续/先别收束。风玲起有增量切口，并**只**邀与切口最相关的**一两位**在【】各回应一次（**不要**全员轮流长段）。随后【风玲】再促用户或征求收束；第三段整体可多轮，但**每一拍**不必全员出场。',
+  U: '[系统通知]【流程图U】语义分类无法明确归入A/B/C/D。请风玲据用户本句在第三段主规则下判断；可一句请用户澄清；在无人明确同意前勿输出成稿式终局总结。**若非用户要求全员**，本拍仍避免按名单让每人一整段。'
+};
+
+/** 流程图 A：用户点名或由系统据话意锁定本轮可发言嘉宾；末尾由风玲交还用户 */
+function buildFlowchartMsgA(namedGuestKeys, options = {}) {
+  const userExplicit = options.userExplicit !== false;
+  const keys = Array.isArray(namedGuestKeys) && namedGuestKeys.length > 0 ? namedGuestKeys : null;
+  const names = keys ? keys.map(k => CELEBRITIES[k]?.displayName).filter(Boolean) : [];
+  let core;
+  if (!keys || names.length === 0) {
+    core =
+      '本轮未能收窄到具体嘉宾名单；请【风玲】结合用户话意与专业匹配**当场**点**至多两位**在【】回应，**其它在场嘉宾不得**各写一整段。';
+  } else if (userExplicit) {
+    core = `用户本轮**点名**的嘉宾为：${names.join('、')}。**仅**允许此几位在【】中针对用户问题作**完整回应**；**未点名**的在场嘉宾**不得**各写一整段独白（默认完全不写；确需时至多**一句**旁白，勿展开）。`;
+  } else {
+    core = `用户**未**逐一点名；系统已据用户本句与议题锁定本轮宜先作答的嘉宾为：**${names.join('、')}**。**仅**允许上述嘉宾在【】作**完整回应**；**其它**在场嘉宾**不得**各写一整段（确需时至多**一句**旁白，勿展开）。`;
+  }
+  return (
+    '[系统通知]【流程图A】' +
+    core +
+    ' 本拍结束后，【风玲】须**简短收束**并**再次把话筒交给用户**（邀请继续追问、换角度、表态或谈到是否收束），以便进入**下一条用户话 → 流程图判型**的小循环；**勿**代用户决定总结、**勿**在本拍末直接输出长篇会议总结报告。'
+  );
+}
+
+/** B/C/U 分支：与流程图主通知并列，重申客户端已算好的本轮可发言名单（须过滤未授权嘉宾） */
+function buildStage3AllowlistHardNotice(allowKeys) {
+  const active = getActiveGuestKeys();
+  const keys = (allowKeys || []).filter(k => active.includes(k));
+  if (keys.length === 0) {
+    return '[系统通知]【本轮发言锁定】系统未能解析本轮名单；请【风玲】据用户话意点**至多两人**在【】回应，**其它嘉宾不得**各整段发言。';
+  }
+  const names = keys.map(k => CELEBRITIES[k]?.displayName).filter(Boolean).join('、');
+  return `[系统通知]【本轮发言锁定】本轮**仅**以下嘉宾可在【】作**长篇实质**发言：**${names}**。**未列入者**不得各写一整段（确需时至多一句旁白）。【风玲】可衔接、收束并交还用户。`;
+}
 
 // ========== 应用状态 ==========
+/** 主持自动续写强控：与 hostedRound/系统注入协同；USER=禁止续链至用户发话，ONE_SHOT=消费一次停链。 */
+const HostFlow = { OPEN: 'open', ONE_SHOT: 'one_shot', USER: 'user' };
+
 const state = {
   messages: [],              // { role: 'user'|'assistant', content: string }
   selectedCelebrities: [],   // 已选参会人员 key 列表
   pendingSelection: [],      // 面板中临时勾选的参会人员
   selectionMode: 'auto',     // auto=主持人模式, manual=无主持人模式
-  meetingFlowMode: CONFIG.meetingFlowMode || CONFIG.defaultMeetingFlowMode || 'three-round', // 主持型会议流程模式
   meetingStarted: false,     // 主持人模式下是否已确认开始
   meetingEnded: false,       // 主持人模式下是否已结束并总结
   allowExternalCelebrities: false, // 是否允许推荐名人库之外人员（需用户确认）
   pendingExternalApproval: false,  // 是否正在等待用户确认“库外推荐”授权
+  /** 不在名人库的姓名：待用户确认是否为可查公众人物后再写入名单（值为显示名） */
+  pendingInviteCelebrityVerify: null,
+  /** 与 pendingInviteCelebrityVerify 配套：若为替换场景，确认后再从名单移除的原嘉宾 key */
+  pendingInviteReplaceOldKey: null,
   lastRejectedExternalNames: [],   // 最近一轮被拦截的“非真实名人名”候选
-  hostedRound: 0,            // 主持人模式已完成轮次（正式会议阶段）
-  hostedStage: 'round1',     // 主持型三轮模式当前阶段：round1/round2/round3/user-interaction/ended
-  round1CompletedKeys: [],   // 第一轮已完成发言的嘉宾
-  round2CompletedKeys: [],   // 第二轮已完成深化发言的嘉宾
+  hostedRound: 0,            // 主持人模式：会议开始后已完成的助手回复轮次（三阶段≈3，封顶3）
   awaitingEndConfirmation: false, // 主持人已发起收尾确认，等待用户确认是否结束
-  awaitingUserPerspective: false, // 第三轮后主持人已邀请用户参与，等待用户回复
   summaryReady: false,       // 用户已确认结束，下一轮应输出会议总结
-  userParticipationCount: 0, // 用户在第三轮后的互动次数
   autoContinueRetries: 0,    // 自动续写重试次数，防止死循环
   recentHostUtterances: [],  // 最近若干条主持人发言（normalized 文本），用于跨条复读检测
   consecutiveUserInvitePending: 0, // 主持人连续邀请用户但用户未回复的次数
+  /** 同一条自动续写链中：已因「S3 末位为嘉宾」强注入过补【风玲】，防止嵌套 check 再次 2819 导致主持人连发多遍邀用户 */
+  s3BridgeFromGuestInFlight: false,
+  hostFlowLock: HostFlow.OPEN, // 强控门：等用户(USER)与编排单停(ONE_SHOT)优先于所有解析
+  /** 本条助手落幕后：勿把「等用户」误判成一轮完结而递增 hostedRound（见 checkAndContinue 风玲尾段） */
+  suppressHostedRoundBumpAfterThisTurn: false,
+  /** 第三段：本轮允许在【】长篇回应的嘉宾 key；每条用户话重算；null 仅流程图 D/总结等 */
+  stage3GuestAllowlistKeys: null,
+  /** 第三段且无白名单：是否已用过一轮「缺嘉宾续写」；用于截断链式全员补位 */
+  stage3UnscopedCatchupUsed: false,
   hostIntroShown: false,     // 风玲开场自我介绍是否已展示
   isGenerating: false,
   abortController: null,
   isPaused: false,           // 会议是否暂停
   sessionId: Date.now().toString(36), // 当前会话ID
   removedCelebrities: new Set(), // 用户手动删除的参会人员 key 集合（防止重新添加）
+  /** 当前仅展示他人分享的链接对话，禁止继续发言 */
+  shareViewMode: false,
+  /** 批量写入分享还原时不触发风玲去重 */
+  importingSharePayload: false,
 };
+
+function getHostNextSegment() {
+  return Math.min(3, (state.hostedRound || 0) + 1);
+}
+
+/** 强控：下一条起必须等用户发话，禁止一切自动续写 */
+function hostFlowRequireUserTurn() {
+  if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) {
+    state.hostFlowLock = HostFlow.USER;
+  }
+}
+
+/** 强控：系统已注入「本拍输出后必停链」的续写，下一拍先消费此锁再解析 */
+function hostFlowArmOneShotStop() {
+  if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) {
+    state.hostFlowLock = HostFlow.ONE_SHOT;
+  }
+}
+
+function hostFlowResetLock() {
+  state.hostFlowLock = HostFlow.OPEN;
+}
 
 const START_MEETING_KEYWORDS = [
   '开始会议', '开始吧', '开始讨论', '确认开始', '可以开始',
@@ -56,176 +133,6 @@ const ADJUST_GUEST_KEYWORDS = [
   '删', '删除', '去掉', '移除', '减少', '不要', '去除', '排除',
   '偏重', '侧重', '更关注', '从.*角度'
 ];
-
-function persistAppSetting(key, value) {
-  try {
-    localStorage.setItem(key, value);
-  } catch (error) {
-    console.warn('设置持久化失败:', key, error);
-  }
-}
-
-function getFreeModelOption(value = CONFIG.model) {
-  return (CONFIG.freeModelOptions || []).find(item => item.value === value) || null;
-}
-
-function getHostedMeetingModeOption(value = state.meetingFlowMode) {
-  return (CONFIG.hostedMeetingModeOptions || []).find(item => item.value === value) || null;
-}
-
-function getModelDisplayName(value = CONFIG.model) {
-  return getFreeModelOption(value)?.label || value || '';
-}
-
-function getHostedMeetingModeLabel(value = state.meetingFlowMode) {
-  return getHostedMeetingModeOption(value)?.label || '三轮会谈模式';
-}
-
-function getHostedRoundLimit(mode = state.meetingFlowMode) {
-  return mode === 'host-relay' ? 5 : 3;
-}
-
-function getDefaultHostedStage() {
-  return 'round1';
-}
-
-function resetHostedMeetingProgress(options = {}) {
-  const { ended = false } = options;
-  state.hostedRound = 0;
-  state.hostedStage = ended ? 'ended' : getDefaultHostedStage();
-  state.round1CompletedKeys = [];
-  state.round2CompletedKeys = [];
-  state.awaitingEndConfirmation = false;
-  state.awaitingUserPerspective = false;
-  state.summaryReady = false;
-  state.userParticipationCount = 0;
-}
-
-function restartHostedConversationContext(latestUserText) {
-  state.messages = latestUserText
-    ? [{ role: 'user', content: latestUserText }]
-    : [];
-  state.recentHostUtterances = [];
-  state.consecutiveUserInvitePending = 0;
-}
-
-function markHostedMeetingEnded() {
-  state.meetingEnded = true;
-  state.hostedStage = 'ended';
-  state.awaitingEndConfirmation = false;
-  state.awaitingUserPerspective = false;
-  state.summaryReady = false;
-}
-
-function mergeUniqueKeys(existing, incoming) {
-  const merged = Array.isArray(existing) ? [...existing] : [];
-  for (const key of incoming || []) {
-    if (!key || merged.includes(key)) continue;
-    merged.push(key);
-  }
-  return merged;
-}
-
-function getRemainingHostedGuestKeys(completedKeys = []) {
-  const completed = new Set(completedKeys);
-  return state.selectedCelebrities.filter(key => !completed.has(key));
-}
-
-function setActiveModel(model, options = {}) {
-  const { persist = true } = options;
-  if (!(CONFIG.freeModelOptions || []).some(item => item.value === model)) return;
-  CONFIG.model = model;
-  if (persist) {
-    persistAppSetting(CONFIG.storageKeys.model, model);
-  }
-  syncSettingsSummaryLabels();
-}
-
-function setActiveMeetingFlowMode(mode, options = {}) {
-  const { persist = true } = options;
-  if (!(CONFIG.hostedMeetingModeOptions || []).some(item => item.value === mode)) return;
-  state.meetingFlowMode = mode;
-  CONFIG.meetingFlowMode = mode;
-  if (persist) {
-    persistAppSetting(CONFIG.storageKeys.meetingFlowMode, mode);
-  }
-  syncSettingsSummaryLabels();
-}
-
-function syncSettingsSummaryLabels() {
-  const modelLabel = document.getElementById('currentModelText');
-  const modeLabel = document.getElementById('currentMeetingModeText');
-  if (modelLabel) modelLabel.textContent = getModelDisplayName();
-  if (modeLabel) modeLabel.textContent = getHostedMeetingModeLabel();
-}
-
-function buildSettingsOptionHtml(name, option, currentValue) {
-  const checked = option.value === currentValue ? 'checked' : '';
-  return `
-    <label class="settings-option">
-      <input type="radio" name="${name}" value="${option.value}" ${checked}>
-      <div class="settings-option-body">
-        <div class="settings-option-title">${option.label}</div>
-        <div class="settings-option-desc">${option.description}</div>
-      </div>
-    </label>
-  `;
-}
-
-function renderSettingsOptions() {
-  if (!settingsModelList || !settingsModeList) return;
-  settingsModelList.innerHTML = (CONFIG.freeModelOptions || [])
-    .map(option => buildSettingsOptionHtml('modelOption', option, CONFIG.model))
-    .join('');
-  settingsModeList.innerHTML = (CONFIG.hostedMeetingModeOptions || [])
-    .map(option => buildSettingsOptionHtml('meetingModeOption', option, state.meetingFlowMode))
-    .join('');
-  const modeScopeHint = document.getElementById('modeScopeHint');
-  if (modeScopeHint) {
-    modeScopeHint.textContent = state.selectionMode === 'manual'
-      ? '你当前处于手动点选嘉宾模式，这里的会议模式会在下一次主持人主导会议时生效。'
-      : '该设置在主持人主导会议时生效；手动点选嘉宾的一对一/自由对话模式保持原有行为。';
-  }
-  syncSettingsSummaryLabels();
-}
-
-function openSettingsModal() {
-  moreMenu.classList.remove('active');
-  renderSettingsOptions();
-  settingsModal.classList.add('active');
-}
-
-function closeSettingsModal() {
-  settingsModal.classList.remove('active');
-}
-
-function applySettings() {
-  const selectedModel = settingsModelList?.querySelector('input[name="modelOption"]:checked')?.value || CONFIG.model;
-  const selectedMeetingMode = settingsModeList?.querySelector('input[name="meetingModeOption"]:checked')?.value || state.meetingFlowMode;
-  const modelChanged = selectedModel !== CONFIG.model;
-  const modeChanged = selectedMeetingMode !== state.meetingFlowMode;
-
-  setActiveModel(selectedModel);
-  setActiveMeetingFlowMode(selectedMeetingMode);
-  closeSettingsModal();
-
-  if (!modelChanged && !modeChanged) return;
-
-  const changeNotes = [];
-  if (modelChanged) {
-    changeNotes.push(`模型已切换为 ${getModelDisplayName(selectedModel)}`);
-  }
-  if (modeChanged) {
-    changeNotes.push(`会议模式已切换为 ${getHostedMeetingModeLabel(selectedMeetingMode)}`);
-    if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) {
-      state.messages.push({
-        role: 'system',
-        content: `[系统通知] 用户刚刚将主持型会议模式切换为「${getHostedMeetingModeLabel(selectedMeetingMode)}」。请从下一次回复开始按新模式推进，保持本场嘉宾名单不变。`
-      });
-    }
-  }
-  addSystemNotice(changeNotes.join('，'));
-}
 
 function normalizeText(text) {
   return (text || '').replace(/\s+/g, '').toLowerCase();
@@ -256,6 +163,8 @@ function findCelebrityKeyByDisplayName(rawName) {
     '马斯洛': 'abraham-maslow',
     '亚当斯密': 'adam-smith',
     '冯诺依曼': 'von-neumann',
+    '休谟': 'david-hume',
+    '大卫休谟': 'david-hume',
   };
   if (ALIASES[cleanName] && CELEBRITIES[ALIASES[cleanName]]) return ALIASES[cleanName];
 
@@ -281,6 +190,45 @@ function findCelebrityKeyByDisplayName(rawName) {
   return null;
 }
 
+/**
+ * 半角 [xxx] 是否像「人名片段」再转成【】，避免 [1]、[a,b]、长英文句 误伤解析。
+ * 能匹配库中人物或符合短中/英人名特征才通过。
+ */
+function isLikelyBracketedPersonName(inner) {
+  let t = String(inner || '')
+    .replace(/[（(].+?[）)]$/g, '')
+    .replace(/[`*_#]/g, '')
+    .trim();
+  if (!t || t.length < 2 || t.length > 24) return false;
+  if (/^\d{1,3}$/.test(t)) return false;
+  if (/https?:/i.test(t) || /]\(/.test(t)) return false;
+  if (/[。！？\n;；]/.test(t)) return false;
+  if (/[，,、]/.test(t)) return false; // 列表、多对象排除
+  if (findCelebrityKeyByDisplayName(t)) return true;
+  if (/^[\u4e00-\u9fa5·•]{2,10}$/.test(t)) {
+    if (/^(各位|我们|如果|因为|所以|可以|这个|问题|这里|但是|其实|现在|可能|需要|就是|一个|没有|什么|时候)$/.test(t)) return false;
+    return true;
+  }
+  if (/^[A-Za-z][A-Za-z\s·.'-]*[A-Za-z·]$|^[A-Za-z]{2,15}$/.test(t) && t.length <= 32) return true;
+  return false;
+}
+
+/** 会前推荐：将「」、［］、以及「可判定为人名」的半角 [ ] 归一成【】，提高解析命中率并控制误报 */
+function normalizeRecommendationTextForExtract(raw) {
+  if (!raw) return '';
+  let s = String(raw);
+  s = s.replace(/「([^」]{1,20})」/g, '【$1】');
+  s = s.replace(/［/g, '【').replace(/］/g, '】');
+  s = s.replace(/\[([^\]\n]+?)\](?![\(:])/g, (match, inner) => {
+    const t = String(inner || '').trim();
+    if (isLikelyBracketedPersonName(t)) {
+      return `【${t}】`;
+    }
+    return match;
+  });
+  return s;
+}
+
 function isGenericPlaceholderName(rawName) {
   const name = String(rawName || '').trim();
   if (!name) return true;
@@ -295,7 +243,154 @@ function isGenericPlaceholderName(rawName) {
   return false;
 }
 
+/**
+ * 「加上 X」「我想请 X」等松散截取到的片段：在未命中名人库时，是否仍宜当作「点名某人」提交库外逻辑。
+ * 用逗号截断、长度与语法结构约束，不靠枚举话题词。
+ */
+function bareInviteCaptureIsLikelyPersonalName(name, fullMessageRaw) {
+  const t = String(name || '').trim();
+  const raw = String(fullMessageRaw || '');
+  if (!t || t.length < 2) return false;
+  if (/[，,、。；！？…]/.test(t)) return false;
+
+  if (findCelebrityKeyByDisplayName(t)) return true;
+
+  if (/^几[位个][\u4e00-\u9fa5]/.test(t)) return false;
+  if (/^[两三四五六七八九十百千]+[位个名][\u4e00-\u9fa5]/.test(t)) return false;
+
+  if (t.length > 8) return false;
+
+  if (t.length > 5) {
+    const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`[《【「（(]\\s*${esc}\\s*[》」）)]`).test(raw)) return true;
+    return false;
+  }
+
+  if (/^[\u4e00-\u9fa5·•]{2,8}$/.test(t)) return true;
+  if (/^[A-Za-z][A-Za-z\s·.'-]*[A-Za-z·]$/.test(t) && t.length <= 24) return true;
+
+  return false;
+}
+
+/** 库外姓名：是否宜直接当作可查公众人物加入名单（否则先请用户口头确认） */
+function inviteLooksLikeRecognizablePublicFigure(name, fullMessageRaw) {
+  const t = String(name || '').trim();
+  const full = String(fullMessageRaw || '');
+  if (!t || isGenericPlaceholderName(t)) return false;
+
+  const esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`[《【「（]\\s*${esc}\\s*[》」）)]`).test(full)) return true;
+
+  if (/^[A-Za-z][A-Za-z\s·.'`\-]{2,52}[A-Za-z·]$/.test(t)) return true;
+
+  const chineseChars = (t.match(/[\u4e00-\u9fa5]/g) || []).length;
+  if (chineseChars >= 3) return true;
+
+  if (chineseChars === 2) {
+    return /(名人|公众人物|历史人物|诺贝尔奖|影帝|影后|球星|巨星|院士|作家|哲学家|科学家|总理|总统|诗人|画家|导演|歌手|演员|CEO|企业家|首富|主编|创始人)/.test(
+      full
+    );
+  }
+
+  return false;
+}
+
+function isRawAffirmingInviteCelebrity(raw) {
+  const t = String(raw || '').trim();
+  return (
+    /^(是的|对的|没错|确认|就是他|就是她|嗯嗯|嗯好的|嗯+|好的+|可以+|OK|ok)[，。！？…\s]*$/i.test(t) ||
+    /^(算|算是)(公众人物|名人)/.test(t)
+  );
+}
+
+function isRawDenyingInviteCelebrity(raw) {
+  const t = String(raw || '').trim();
+  return (
+    /^(不|不是|不算|否定|算了|不用了|取消|不要|换一个)/.test(t) ||
+    /^(换个|换人|只要库内)/.test(t)
+  );
+}
+
+/**
+ * 用户在「是否为公众人物」待确认状态下的简短答复。
+ * @returns {{ consumed: boolean, intent?: object }}
+ */
+function consumePendingInviteCelebrityVerify(raw, text) {
+  const pn = state.pendingInviteCelebrityVerify;
+  if (!pn || typeof pn !== 'string') return { consumed: false };
+
+  const normalizedPending = pn.trim();
+  if (!normalizedPending) {
+    state.pendingInviteCelebrityVerify = null;
+    state.pendingInviteReplaceOldKey = null;
+    return { consumed: false };
+  }
+
+  if (isRawDenyingInviteCelebrity(raw)) {
+    state.pendingInviteCelebrityVerify = null;
+    state.pendingInviteReplaceOldKey = null;
+    return {
+      consumed: true,
+      intent: {
+        type: 'invite-celebrity-verify-cancelled',
+        names: [normalizedPending],
+        systemMsg:
+          `[系统通知] 用户否认或未将「${normalizedPending}」确认为可查公众人物。请继续仅从名人库与已有名单输出【】名单，勿写入「${normalizedPending}」。`,
+      },
+    };
+  }
+
+  if (!isRawAffirmingInviteCelebrity(raw)) return { consumed: false };
+
+  state.pendingInviteCelebrityVerify = null;
+  const replaceOldKey = state.pendingInviteReplaceOldKey;
+  state.pendingInviteReplaceOldKey = null;
+
+  const keyInDb = findCelebrityKeyByDisplayName(normalizedPending);
+  let resolvedKey = keyInDb || ensureCelebrityEntry(normalizedPending);
+  if (!resolvedKey) {
+    return {
+      consumed: true,
+      intent: {
+        type: 'invite-celebrity-verify-cancelled',
+        names: [normalizedPending],
+        systemMsg:
+          `[系统通知] 未能为「${normalizedPending}」创建嘉宾条目。请引导用户使用名人库内全名或稍后重试，勿强行写入【】。`,
+      },
+    };
+  }
+
+  if (replaceOldKey && state.selectedCelebrities.includes(replaceOldKey)) {
+    state.selectedCelebrities = state.selectedCelebrities.filter(k => k !== replaceOldKey);
+    state.removedCelebrities.add(replaceOldKey);
+  }
+
+  state.removedCelebrities.delete(resolvedKey);
+  if (!state.selectedCelebrities.includes(resolvedKey)) {
+    state.selectedCelebrities.push(resolvedKey);
+    updateGuestBar();
+  }
+
+  const oldDisp = replaceOldKey ? CELEBRITIES[replaceOldKey]?.displayName : '';
+  const inLibrary = !!keyInDb;
+  const systemMsg = replaceOldKey
+    ? `[系统通知] 用户已确认「${normalizedPending}」为希望邀请的公众人物；已将「${oldDisp || '原嘉宾'}」替换为「${normalizedPending}」。输出更新后的完整【】名单（含头衔与推荐理由）并询问用户是否满意。`
+    : inLibrary
+      ? `[系统通知] 用户已确认添加「${normalizedPending}」（名人库内）。输出更新后的完整嘉宾名单并询问用户是否满意。`
+      : `[系统通知] 用户已确认添加「${normalizedPending}」为公众人物。请写入【】名单（真实可查信息），输出完整嘉宾名单并询问用户是否满意。`;
+
+  return {
+    consumed: true,
+    intent: {
+      type: 'add',
+      names: [normalizedPending],
+      systemMsg,
+    },
+  };
+}
+
 function extractRecommendationKeys(content) {
+  const source = normalizeRecommendationTextForExtract(content);
   const keys = [];
   const seen = new Set();
   const rejected = [];
@@ -303,7 +398,7 @@ function extractRecommendationKeys(content) {
   // 第一轮：从【名字】标记提取
   const regex = /【([^】]{1,20})】/g;
   let m;
-  while ((m = regex.exec(content)) !== null) {
+  while ((m = regex.exec(source)) !== null) {
     const name = m[1].trim();
     if (!name || name === '风玲') continue;
     let key = findCelebrityKeyByDisplayName(name);
@@ -327,10 +422,41 @@ function extractRecommendationKeys(content) {
       .sort((a, b) => b.name.length - a.name.length);
     for (const { key, name } of sortedCelebs) {
       if (seen.has(key) || state.removedCelebrities.has(key)) continue;
-      if (content.includes(name)) {
+      if (source.includes(name)) {
         seen.add(key);
         keys.push(key);
       }
+    }
+  }
+
+  // 第三回退：**加粗** 片段（仅库内命中 或 库外+像真人名，避免小标题/强调句误当嘉宾）
+  if (keys.length < 2) {
+    const bold = /\*\*([^*]+?)\*\*/g;
+    let bm;
+    while ((bm = bold.exec(source)) !== null) {
+      const name = String(bm[1] || '')
+        .replace(/[（(].+?[）)]$/g, '')
+        .replace(/[`*#]/g, '')
+        .trim();
+      if (!name || name.length < 2 || name.length > 22) continue;
+      if (/^(第|以下|第一|第二|注意|说明|建议|推荐人|推荐如下)/.test(name)) continue;
+      if (/[，,。！？\n;；]/.test(name)) continue;
+      let key = findCelebrityKeyByDisplayName(name);
+      if (!key) {
+        if (!isLikelyBracketedPersonName(name)) continue;
+        if (state.allowExternalCelebrities) {
+          if (isGenericPlaceholderName(name)) {
+            rejected.push(name);
+            continue;
+          }
+          key = ensureCelebrityEntry(name);
+        } else {
+          continue;
+        }
+      }
+      if (!key || seen.has(key) || state.removedCelebrities.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
     }
   }
 
@@ -346,6 +472,9 @@ function detectPreMeetingIntent(userText) {
   const raw = String(userText || '').trim();
   const text = normalizeText(raw);
   if (!text) return { type: 'conversation' };
+
+  const pendingResolved = consumePendingInviteCelebrityVerify(raw, text);
+  if (pendingResolved.consumed && pendingResolved.intent) return pendingResolved.intent;
 
   // 1. 重新推荐（优先级最高，避免被"换"匹配到替换）
   if (/(重新推荐|换一批|换一组|全部换|重新来|再推荐一批|再推荐一组|换一波|全换了|都换掉|不满意.*推荐|重新选)/.test(text)) {
@@ -370,12 +499,29 @@ function detectPreMeetingIntent(userText) {
       const newName = m[2].replace(/[【】，,。.！!？?、]/g, '').trim();
       if (oldName && newName && oldName !== newName) {
         const oldKey = findCelebrityKeyByDisplayName(oldName);
-        if (oldKey && state.selectedCelebrities.includes(oldKey)) {
+        const oldInList = !!(oldKey && state.selectedCelebrities.includes(oldKey));
+
+        let newKey = findCelebrityKeyByDisplayName(newName);
+        if (!newKey && bareInviteCaptureIsLikelyPersonalName(newName, raw)) {
+          if (inviteLooksLikeRecognizablePublicFigure(newName, raw)) {
+            newKey = ensureCelebrityEntry(newName);
+          } else if (oldInList) {
+            state.pendingInviteCelebrityVerify = newName;
+            state.pendingInviteReplaceOldKey = oldKey;
+            return {
+              type: 'invite-celebrity-verify',
+              names: [newName],
+              systemMsg:
+                `[系统通知] 用户想把「${oldName}」换成「${newName}」，但「${newName}」不在名人库且无法仅从字面断定是否为可查公众人物。**在用户确认前请勿从名单中移除「${oldName}」、也不要把「${newName}」写入【】。请先简短询问用户是否确指某位真实可查的公众人物；用户确认后再替换并输出完整名单。`,
+            };
+          }
+        }
+
+        if (oldKey && oldInList) {
           state.selectedCelebrities = state.selectedCelebrities.filter(k => k !== oldKey);
           state.removedCelebrities.add(oldKey);
           updateGuestBar();
         }
-        const newKey = findCelebrityKeyByDisplayName(newName);
         if (newKey && !state.selectedCelebrities.includes(newKey)) {
           state.removedCelebrities.delete(newKey);
           state.selectedCelebrities.push(newKey);
@@ -420,37 +566,64 @@ function detectPreMeetingIntent(userText) {
     }
   }
 
-  // 4. 添加嘉宾
+  // 4. 添加嘉宾（截取片段止于逗号/句读，避免「我想请……」吞掉后半句）
   const addPatterns = [
-    /(?:加上|添加|增加|邀请|也要|还要|再加|加入|请来|叫上|也请|还想邀请|能不能加个?)\s*(.{1,10})/,
-    /(?:把|让)\s*(.{1,10}?)\s*(?:也加进来|也加上|也请来|加进来)/,
-    /我想(?:邀请|请)\s*(.{1,10})/,
+    /(?:加上|添加|增加|邀请|也要|还要|再加|加入|请来|叫上|也请|还想邀请|能不能加个?)\s*([^，,。；\n]{1,10})/,
+    /(?:把|让)\s*([^，,。；\n]{1,10}?)\s*(?:也加进来|也加上|也请来|加进来)/,
+    /我想(?:邀请|请)\s*([^，,。；\n]{1,14})/,
   ];
   for (const p of addPatterns) {
     const m = raw.match(p);
     if (m) {
-      const name = m[1].replace(/[【】，,。.！!？?、也吧呢啊了的]/g, '').trim();
-      if (name && name.length >= 2 && name.length <= 10 && !isGenericPlaceholderName(name)) {
-        const key = findCelebrityKeyByDisplayName(name);
-        if (key) {
-          state.removedCelebrities.delete(key);
-          if (!state.selectedCelebrities.includes(key)) {
-            state.selectedCelebrities.push(key);
+      let name = m[1].replace(/[【】，,。.！!？?、也吧呢啊了的]/g, '').trim();
+      name = name.replace(/\s+(?:来参加|来参会|出席|到场|上台)\s*$/u, '').trim();
+      if (
+        name &&
+        name.length >= 2 &&
+        name.length <= 10 &&
+        !isGenericPlaceholderName(name) &&
+        (findCelebrityKeyByDisplayName(name) || bareInviteCaptureIsLikelyPersonalName(name, raw))
+      ) {
+        const keyInDb = findCelebrityKeyByDisplayName(name);
+        if (keyInDb) {
+          state.removedCelebrities.delete(keyInDb);
+          if (!state.selectedCelebrities.includes(keyInDb)) {
+            state.selectedCelebrities.push(keyInDb);
             updateGuestBar();
           }
           return {
             type: 'add',
             names: [name],
-            systemMsg: `[系统通知] 用户要求添加「${name}」到推荐名单（名人库内已有此名人）。请将其加入名单，输出更新后的完整嘉宾名单（含头衔和推荐理由），并询问用户是否满意。`
-          };
-        } else {
-          state.allowExternalCelebrities = true;
-          return {
-            type: 'add-external',
-            names: [name],
-            systemMsg: `[系统通知] 用户要求添加「${name}」（名人库内没有此人）。用户直接指定了名人库外的名人，这是允许的。请将其加入推荐名单（使用真实名人信息），输出更新后的完整嘉宾名单，并询问用户是否满意。`
+            systemMsg:
+              `[系统通知] 用户要求添加「${name}」到推荐名单（名人库内已有此名人）。请将其加入名单，输出更新后的完整嘉宾名单（含头衔和推荐理由），并询问用户是否满意。`,
           };
         }
+
+        if (!inviteLooksLikeRecognizablePublicFigure(name, raw)) {
+          state.pendingInviteCelebrityVerify = name;
+          state.pendingInviteReplaceOldKey = null;
+          return {
+            type: 'invite-celebrity-verify',
+            names: [name],
+            systemMsg:
+              `[系统通知] 用户希望邀请「${name}」，但该姓名不在名人库，且仅从字面不足以断定是否为可查证的公众人物。**本条请先不要**将「${name}」写入【】名单；请简短询问用户是否确指某位真实可查的公众人物或历史人物（而非昵称、泛称）。用户确认后再纳入名单并输出；若用户否认则仅用库内人选。`,
+          };
+        }
+
+        const resolvedKey = ensureCelebrityEntry(name);
+        if (!resolvedKey) continue;
+
+        state.removedCelebrities.delete(resolvedKey);
+        if (!state.selectedCelebrities.includes(resolvedKey)) {
+          state.selectedCelebrities.push(resolvedKey);
+          updateGuestBar();
+        }
+        return {
+          type: 'add',
+          names: [name],
+          systemMsg:
+            `[系统通知] 用户要求添加「${name}」（名人库外、系统判定为高置信可查公众人物）。请将其写入【】推荐名单（使用真实可查信息），输出更新后的完整嘉宾名单（含头衔、推荐理由），并询问用户是否满意。`,
+        };
       }
     }
   }
@@ -485,6 +658,7 @@ function shouldStartHostedMeeting(userText) {
     return false;
   }
   if (state.pendingExternalApproval) return false;
+  if (state.pendingInviteCelebrityVerify) return false;
   const intent = detectPreMeetingIntent(userText);
   return intent.type === 'start';
 }
@@ -493,37 +667,365 @@ function markHostedMeetingStarted() {
   state.meetingStarted = true;
   state.meetingEnded = false;
   state.pendingExternalApproval = false;
-  resetHostedMeetingProgress();
+  state.pendingInviteCelebrityVerify = null;
+  state.pendingInviteReplaceOldKey = null;
+  state.hostedRound = 0;
+  state.awaitingEndConfirmation = false;
+  state.summaryReady = false;
   state.autoContinueRetries = 0;
+  state.s3BridgeFromGuestInFlight = false;
+  state.stage3GuestAllowlistKeys = null;
+  state.stage3UnscopedCatchupUsed = false;
+  hostFlowResetLock();
   // 主持人模式：用户确认开始后才展示参会名人清单
   updateGuestBar();
-  headerSubtitle.textContent = `${state.selectedCelebrities.length} 位嘉宾已确认，${getHostedMeetingModeLabel()}进行中`;
+  headerSubtitle.textContent = `${state.selectedCelebrities.length} 位嘉宾已确认，会议进行中`;
   state.messages.push({
     role: 'system',
-    content: `[系统通知] 用户已确认当前嘉宾名单，主持型会议正式开始。本场采用「${getHostedMeetingModeLabel()}」。请按该模式进入首轮讨论。`
+    content: '[系统通知] 用户已确认当前嘉宾名单，主持人模式会议正式开始。请从三阶段中的【阶段一·首轮分析】开始。'
   });
 }
 
-function isAffirmativeEndReply(text) {
-  const t = normalizeText(text);
-  if (!t) return false;
-  return /(可以结束|结束吧|就到这|到这吧|可以总结|总结吧|收尾吧|确认结束|结束会议|好，结束|同意结束|可以收尾|行，结束|可以了)/.test(t);
+/** 从 LLM 消息正文中解 JSON 对象，兼容 ```json 围栏 */
+function parseJsonFromLlmMessage(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  let j = s;
+  const f = s.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (f) j = f[1].trim();
+  try {
+    return JSON.parse(j);
+  } catch {
+    return null;
+  }
 }
 
-function isNegativeEndReply(text) {
-  const t = normalizeText(text);
-  if (!t) return false;
-  return /(继续|继续聊|继续讨论|不要结束|先别结束|不结束|再聊|再深入|还没结束)/.test(t);
+/** 解析判型 JSON：branch + 点名的显示名数组（A 分支用） */
+function parseFlowchartStage3ResultFromLlm(raw) {
+  const o = parseJsonFromLlmMessage(raw);
+  if (!o) return { branch: 'U', namedDisplayNames: [] };
+  const b = String(o.branch || o.Branch || '').toUpperCase();
+  let branch = 'U';
+  if (b === 'D' || b === 'END' || b === 'SUMMARY') branch = 'D';
+  else if (b === 'A') branch = 'A';
+  else if (b === 'B') branch = 'B';
+  else if (b === 'C') branch = 'C';
+  const rawNamed = o.named ?? o.names ?? o.点名 ?? [];
+  const namedDisplayNames = Array.isArray(rawNamed)
+    ? rawNamed.map(x => String(x).trim()).filter(Boolean)
+    : [];
+  return { branch, namedDisplayNames };
+}
+
+/** 将判型器/用户话里的显示名映射为当前在场嘉宾 key（仅已入座且未移除者） */
+function mapDisplayNamesToActiveGuestKeys(displayNames) {
+  const active = new Set(getActiveGuestKeys());
+  const keys = [];
+  const seen = new Set();
+  for (const dn of displayNames || []) {
+    const key = findCelebrityKeyByDisplayName(String(dn || '').trim());
+    if (key && active.has(key) && !seen.has(key)) {
+      seen.add(key);
+      keys.push(key);
+    }
+  }
+  return keys;
+}
+
+/** 流程图第三段：兼容旧调用，仅取 branch */
+function parseFlowchartBranchFromLlm(raw) {
+  return parseFlowchartStage3ResultFromLlm(raw).branch;
+}
+
+/** 第三段判型兜底：用户是否明确要求在场**全体**发言 */
+function stage3UserImpliesAllGuests(t) {
+  return /(大家|各位|全场|所有人|全员|每人|挨个|依次|都来说|都来谈谈|一起谈|一起说|分别谈|分别说|听听各位|每位嘉宾|在座的)/.test(
+    String(t || '')
+  );
+}
+
+/** 用户是否表达「只要少数几位」而非全场 */
+function stage3UserImpliesSubsetOnly(t) {
+  return /(只想|只要|先听|仅让|仅要|仅需|别让其他人|其他人先别|不用所有人|不必全员|先请)/.test(String(t || ''));
+}
+
+function regexEscapeForStage3(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 第三段规则兜底：用户是否在**指派**具体嘉宾作答，而非仅在讨论里顺带提到姓名（否则会误判白名单、后续每轮都窄在前一次提到的人）。
+ */
+function stage3UserExplicitlyDirectsNamedGuests(t, mentionedKeys) {
+  if (!mentionedKeys || mentionedKeys.length === 0) return false;
+  const s = String(t || '');
+  if (stage3UserImpliesSubsetOnly(s)) return true;
+  if (stage3UserImpliesAllGuests(s)) return false;
+
+  // 明显主持指令：请/让/交给… + 谈/说/发言…
+  if (/(让|请|交给|先请|先让|听听|想听|要听|想问|点名|轮到).{0,28}(谈|说|发言|回应|讲讲|几句)/.test(s)) {
+    return true;
+  }
+
+  // 「某某你怎么看 / 怎么说」等与姓名紧邻的定向提问
+  for (const key of mentionedKeys) {
+    const dn = CELEBRITIES[key]?.displayName;
+    if (!dn) continue;
+    const e = regexEscapeForStage3(dn);
+    if (new RegExp(`${e}.{0,12}(怎么看|如何看|怎么说|咋看)`).test(s)) return true;
+    if (new RegExp(`${e}先(说|谈|讲|回应)`).test(s)) return true;
+    if (new RegExp(`(听听|想听|问一下|轮到).{0,10}${e}`).test(s)) return true;
+  }
+
+  return false;
+}
+
+/** 无 API 或推断失败时：按姓名在原文出现次数粗选 1～2 位 */
+function heuristicPickStage3Responders(userText, active) {
+  if (!active || active.length === 0) return [];
+  if (active.length === 1) return [...active];
+  const t = String(userText || '');
+  const scored = active.map(k => {
+    const dn = CELEBRITIES[k]?.displayName || '';
+    let s = 0;
+    if (dn && t.includes(dn)) s += 10;
+    for (const w of (dn || '').split(/[·•]/)) {
+      const p = w.trim();
+      if (p.length >= 2 && t.includes(p)) s += 4;
+    }
+    return { k, s };
+  }).sort((a, b) => b.s - a.s);
+  if (scored[0].s > 0) {
+    const out = [scored[0].k];
+    const second = scored.find(x => x.k !== out[0] && x.s > 0);
+    if (second) out.push(second.k);
+    if (out.length === 1) {
+      const other = active.find(k => k !== out[0]);
+      if (other) out.push(other);
+    }
+    return out.slice(0, 2);
+  }
+  return active.slice(0, 2);
+}
+
+/**
+ * 用户未点名且非「全场」时：推断本轮 1～2 位宜先回应的嘉宾（写入阶段三白名单）
+ */
+async function inferStage3ResponderKeysFromUserMessage(userText) {
+  const active = getActiveGuestKeys();
+  if (active.length === 0) return [];
+  if (active.length === 1) return [...active];
+  if (stage3UserImpliesAllGuests(userText)) return [...active];
+
+  const t = String(userText || '').trim();
+  if (!CONFIG.apiKey) {
+    return heuristicPickStage3Responders(t, active);
+  }
+
+  const namesLine = active.map(k => CELEBRITIES[k]?.displayName).filter(Boolean).join('、');
+  const system =
+    '你是圆桌**第三阶段·本轮发言人**推断员。用户原话**可能未点名**，请从下列**在场嘉宾**中选出**恰好 1～2 位**最适宜**本轮**在【】中先作**实质回应**的人（专业、立场与用户问题的匹配度；若两人能形成观点反差可任取两人）。\n' +
+    `嘉宾**显示名**须与列表完全一致：${namesLine}\n\n` +
+    '**只输出**一行纯JSON，无markdown：{"names":["显示名1"]} 或 {"names":["显示名1","显示名2"]}\n';
+
+  try {
+    const response = await fetch(CONFIG.apiEndpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer ' + CONFIG.apiKey,
+      },
+      body: JSON.stringify({
+        model: CONFIG.model,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: '用户原话：\n' + t },
+        ],
+        temperature: 0.15,
+        max_tokens: 180,
+        stream: false,
+      }),
+    });
+    if (!response.ok) return heuristicPickStage3Responders(t, active);
+    const data = await response.json();
+    const o = parseJsonFromLlmMessage(data.choices?.[0]?.message?.content);
+    const rawNamed = o && (o.names ?? o.named ?? []);
+    const namedDisplayNames = Array.isArray(rawNamed)
+      ? rawNamed.map(x => String(x).trim()).filter(Boolean)
+      : [];
+    let keys = mapDisplayNamesToActiveGuestKeys(namedDisplayNames);
+    keys = [...new Set(keys)].filter(k => active.includes(k));
+    if (keys.length >= 1) return keys.slice(0, 2);
+  } catch (e) {
+    console.warn('[流程图] 推断本轮发言人', e);
+  }
+  return heuristicPickStage3Responders(t, active);
+}
+
+/**
+ * 第三段每条用户输入：大模型判 A/B/C/D/U，A 时解析被点名嘉宾
+ * @returns {Promise<{ branch: 'D'|'A'|'B'|'C'|'U', namedKeys: string[] }>}
+ */
+async function classifyFlowchartStage3UserIntent(userText) {
+  const t = String(userText || '').trim();
+  if (!t) return { branch: 'U', namedKeys: [] };
+  if (!CONFIG.apiKey) {
+    if (!stage3UserImpliesAllGuests(t)) {
+      const mentioned = extractMentionedSelectedCelebrities(t);
+      if (mentioned.length === 1 && stage3UserExplicitlyDirectsNamedGuests(t, mentioned)) {
+        return { branch: 'A', namedKeys: mentioned };
+      }
+      if (mentioned.length >= 2 && mentioned.length <= 4 && stage3UserImpliesSubsetOnly(t)) {
+        return { branch: 'A', namedKeys: mentioned };
+      }
+    }
+    console.warn('[流程图] 未配置 API 密钥，第三段用户分支为 U，由主模型自判');
+    return { branch: 'U', namedKeys: [] };
+  }
+  const namesLine = state.selectedCelebrities
+    .filter(k => !state.removedCelebrities.has(k))
+    .map(k => CELEBRITIES[k]?.displayName)
+    .filter(Boolean)
+    .join('、') || '无';
+  const pre = state.awaitingEndConfirmation
+    ? '【语境】风玲**刚刚**在问：能否**结束**本场/是否**作会议总结。请优先区分：用户是**明确同意**结束+总结(选D)；还是要**再讨论**(选A或B或C，勿选D)。\n\n'
+    : '';
+  const system =
+    pre +
+    '你是圆桌**第三阶段**用户意图判型员。在场可点名嘉宾为：' +
+    namesLine +
+    '。\n\n' +
+    '**只输出**一行纯JSON，无markdown：{"branch":"D"|"A"|"B"|"C"|"U","named":[]}\n' +
+    'branch：D=结束/总结；A=用户**点名**上列某几位具体嘉宾回答；B=有问题未指定谁答；C=再聊/继续；U=其它。当 branch 为 A 时 named 为被点名的**显示名**数组（与上列一致）；非 A 时 named 为 []。理解口语、昵称。\n';
+
+  const response = await fetch(CONFIG.apiEndpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + CONFIG.apiKey,
+    },
+    body: JSON.stringify({
+      model: CONFIG.model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: '用户原话：\n' + t },
+      ],
+      temperature: 0.12,
+      max_tokens: 220,
+      stream: false,
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error('flowchart user intent ' + response.status + ' ' + errText.slice(0, 200));
+  }
+  const data = await response.json();
+  let { branch, namedDisplayNames } = parseFlowchartStage3ResultFromLlm(data.choices?.[0]?.message?.content);
+  let namedKeys = mapDisplayNamesToActiveGuestKeys(namedDisplayNames);
+  // 具名以流程图 JSON 为准；空的 A 留在 processUserTurn 由「显式点名 / 推断」统一写白名单
+  if (branch !== 'D' && !stage3UserImpliesAllGuests(t)) {
+    const mentioned = extractMentionedSelectedCelebrities(t);
+    if (mentioned.length === 1 && stage3UserExplicitlyDirectsNamedGuests(t, mentioned)) {
+      branch = 'A';
+      namedKeys = mentioned;
+    } else if (mentioned.length >= 2 && mentioned.length <= 4 && stage3UserImpliesSubsetOnly(t)) {
+      branch = 'A';
+      namedKeys = mentioned;
+    }
+  }
+  if (branch === 'A' && namedKeys.length === 0) {
+    console.log('[流程图] A 分支但未带回 named，白名单由后续推断/显式提取写入');
+  }
+  return { branch, namedKeys };
+}
+
+/** 风玲输出是否在**征求**用户**是否**可**结束/作总结**（仅语义；有密钥时走 LLM） */
+async function classifyHostAskingUserToEnd(hostFullText) {
+  const text = String(hostFullText || '');
+  if (!text.trim() || !CONFIG.apiKey) return null;
+  const system =
+    'You classify whether a Chinese host "风玲" is asking the **only user in the room** to decide: whether this **session/theme can end now**, or **whether a wrap-up "会议总结" can start now**, or a **二选一: continue free discussion vs go to final summary**.\n' +
+    'Return only JSON: {"asking_end":true} or {"asking_end":false}.\n' +
+    'true: clear endgame question to the user (can we end / shall I summarize / 继续聊还是我们总结).\n' +
+    'false: only guiding guests, asking user for opinion on content, general transition, or inviting user to comment without the end/summary choice.';
+
+  const response = await fetch(CONFIG.apiEndpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer ' + CONFIG.apiKey,
+    },
+    body: JSON.stringify({
+      model: CONFIG.model,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: '主持人发言全文：\n' + text },
+      ],
+      temperature: 0.1,
+      max_tokens: 64,
+      stream: false,
+    }),
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  const o = parseJsonFromLlmMessage(data.choices?.[0]?.message?.content);
+  if (o && typeof o.asking_end === 'boolean') return o.asking_end;
+  if (o && typeof o.askingEnd === 'boolean') return o.askingEnd;
+  return null;
+}
+
+/** 仅第三段主流程：若风玲在征求收束/总结，则置 awaiting + 等用户。 */
+async function tryMarkHostAskedUserForEnd(assistantText) {
+  if (state.selectionMode !== 'auto' || !state.meetingStarted || state.meetingEnded) return;
+  if ((state.hostedRound || 0) < 2) return;
+  const text = String(assistantText || '');
+  if (!text.trim()) return;
+
+  // 只分析【风玲】正文。若把整段（含嘉宾长篇）交给「是否在问收束」分类器，易误判并置 USER，导致 checkAndContinue 不再补风玲/嘉宾。
+  const isOneOnOne = state.selectedCelebrities.length === 1;
+  const parsedForHost = parseMultiSpeaker(text, isOneOnOne);
+  const hostOnly = parsedForHost
+    .filter(s => s && s.key === 'fengling')
+    .map(s => String(s.text || '').trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+  if (!hostOnly) return;
+
+  let asked = false;
+  if (CONFIG.apiKey) {
+    const sem = await classifyHostAskingUserToEnd(hostOnly);
+    if (sem === true) asked = true;
+    else if (sem === false) asked = false;
+    else asked = detectHostEndConfirmationPrompt(hostOnly);
+  } else {
+    asked = detectHostEndConfirmationPrompt(hostOnly);
+  }
+  if (asked) {
+    state.awaitingEndConfirmation = true;
+    state.summaryReady = false;
+    hostFlowRequireUserTurn();
+  }
 }
 
 function detectHostEndConfirmationPrompt(content) {
   const text = String(content || '');
-  return /是否可以结束|要不要结束|是否结束|可以结束会议吗|要我做总结|继续深入讨论，还是我来做个总结|是否先告一段落|是否就此结束|如果可以的话我来总结|这场会谈是否可以结束/.test(text);
+  return /是否可以结束|要不要结束|是否结束|可以结束会议吗|要我做总结|继续深入讨论，还是我来做个总结/.test(text);
 }
 
 function isExternalAllowReply(text) {
-  const t = normalizeText(text);
+  const raw = String(text || '').trim();
+  const t = normalizeText(raw);
   if (!t) return false;
+  if (state.pendingExternalApproval) {
+    if (/(不要|不用|否|拒绝|仅库内|只要库内|算了|别库外|不要库外|还是.*库内|库里|库内|换成库的)/.test(t)) return false;
+    if (
+      raw.length <= 20 &&
+      /^(好|行|可以|嗯嗯|嗯|是的|同意|没问题|要|需要|继续|加吧|可以啊|好吧|允许|确认|嗯好|好啊)/.test(raw)
+    ) {
+      return true;
+    }
+  }
   const allowWords = /(可以|允许|同意|行|好|没问题|都可以|可)/.test(t);
   const externalWords = /(库外|名人库外|外部|额外|另外找|另外推荐)/.test(t);
   const specifyWords = /(我指定|我想邀请|请邀请|按我指定|由我指定)/.test(t);
@@ -538,85 +1040,6 @@ function isExternalRejectReply(text) {
 
 function detectMeetingSummary(content) {
   return /(总结|报告)/.test(content) && /核心观点/.test(content) && /(共识|分歧)/.test(content);
-}
-
-function detectHostUserPerspectivePrompt(content) {
-  const text = String(content || '');
-  if (!text || detectHostEndConfirmationPrompt(text)) return false;
-  return /你怎么看|你的看法|你更倾向|你最认同|你会怎么选|你最想追问谁|你想先听谁展开|你愿意先谈谈|你想从哪一点继续|你最在意哪一点/.test(text);
-}
-
-function extractSpokenSelectedGuestKeysFromContent(content) {
-  const parsed = parseMultiSpeaker(String(content || ''), false);
-  return [...new Set(
-    parsed
-      .map(seg => seg.key)
-      .filter(key => key && key !== 'fengling' && state.selectedCelebrities.includes(key))
-  )];
-}
-
-function canSummarizeCurrentHostedMeeting() {
-  if (state.selectionMode !== 'auto' || !state.meetingStarted || state.meetingEnded) return false;
-  if (state.meetingFlowMode !== 'three-round') {
-    return state.hostedRound >= 3 || state.awaitingEndConfirmation || state.userParticipationCount > 0;
-  }
-  return state.hostedStage === 'user-interaction'
-    || state.awaitingEndConfirmation
-    || state.userParticipationCount > 0;
-}
-
-function recordHostedAssistantTurn(content) {
-  if (state.selectionMode !== 'auto' || !state.meetingStarted || state.meetingEnded) return;
-
-  if (detectMeetingSummary(content) && state.summaryReady) {
-    markHostedMeetingEnded();
-    return;
-  }
-
-  if (state.meetingFlowMode !== 'three-round') {
-    state.hostedRound = Math.min(getHostedRoundLimit(), state.hostedRound + 1);
-    if (detectHostEndConfirmationPrompt(content)) {
-      state.awaitingEndConfirmation = true;
-      state.awaitingUserPerspective = false;
-      state.summaryReady = false;
-    }
-    return;
-  }
-
-  const spokenGuestKeys = extractSpokenSelectedGuestKeysFromContent(content);
-  const askedUserPerspective = detectHostUserPerspectivePrompt(content);
-  const askedEndConfirmation = detectHostEndConfirmationPrompt(content);
-  const stageBefore = state.hostedStage;
-  const canOpenUserInteraction = stageBefore === 'round3' || stageBefore === 'user-interaction' || state.hostedRound >= 3;
-
-  if (stageBefore === 'round1') {
-    state.round1CompletedKeys = mergeUniqueKeys(state.round1CompletedKeys, spokenGuestKeys);
-    if (state.selectedCelebrities.length > 0 && getRemainingHostedGuestKeys(state.round1CompletedKeys).length === 0) {
-      state.hostedStage = 'round2';
-      state.hostedRound = Math.max(state.hostedRound, 1);
-    }
-  } else if (stageBefore === 'round2') {
-    state.round2CompletedKeys = mergeUniqueKeys(state.round2CompletedKeys, spokenGuestKeys);
-    if (state.selectedCelebrities.length > 0 && getRemainingHostedGuestKeys(state.round2CompletedKeys).length === 0) {
-      state.hostedStage = 'round3';
-      state.hostedRound = Math.max(state.hostedRound, 2);
-    }
-  } else if (stageBefore === 'round3' || stageBefore === 'user-interaction') {
-    state.hostedRound = Math.max(state.hostedRound, 3);
-  }
-
-  if (askedUserPerspective && canOpenUserInteraction) {
-    state.hostedStage = 'user-interaction';
-    state.awaitingUserPerspective = true;
-    state.awaitingEndConfirmation = false;
-  }
-
-  if (askedEndConfirmation && canOpenUserInteraction) {
-    state.hostedStage = 'user-interaction';
-    state.awaitingEndConfirmation = true;
-    state.awaitingUserPerspective = false;
-    state.summaryReady = false;
-  }
 }
 
 function isHostDirectiveText(text) {
@@ -687,68 +1110,6 @@ function buildManualTargetDirective(userText) {
   return null;
 }
 
-function isLikelyNewMeetingRequest(text) {
-  const t = normalizeText(text);
-  if (!t) return false;
-  return /(换一[组批波]|重新推荐|再推荐|换.*嘉宾|换.*名人|新.*话题|换个话题|重新开始|新的讨论|再开一场|开个新.*会|讨论.*新.*问题|聊.*别的|另一个问题|再问一个问题|再聊个问题|换个议题)/.test(t);
-}
-
-function detectHostedUserIntent(text) {
-  const raw = String(text || '').trim();
-  const mentioned = extractMentionedSelectedCelebrities(raw);
-
-  if (isLikelyNewMeetingRequest(raw)) {
-    return { type: 'new-topic', mentioned };
-  }
-
-  if (isAffirmativeEndReply(raw) || /(总结一下|总结吧|收个尾|做个总结|结束讨论|到这里吧)/.test(raw)) {
-    return { type: 'end', mentioned };
-  }
-
-  if (mentioned.length > 0 && (/[？?]/.test(raw) || /(怎么看|怎么想|评价|点评|回应|反驳|补充|展开|谈谈|说说|分析|聊聊|解释|继续|具体|比较|分歧)/.test(raw))) {
-    return { type: 'targeted-guests', mentioned };
-  }
-
-  if (/(继续|深入|细化|展开|具体|案例|落地|怎么做|怎么办|进一步|延展|详细|说透|多讲讲|再谈谈|再展开)/.test(raw)) {
-    return { type: 'deepen', mentioned };
-  }
-
-  if (/(我觉得|我认为|我更倾向|我更认同|听下来|总结一下|我的看法|我比较赞同|我倾向于|在我看来)/.test(raw)) {
-    return { type: 'user-opinion', mentioned };
-  }
-
-  return { type: 'general', mentioned };
-}
-
-function buildHostedUserIntentDirective(userText) {
-  if (state.selectionMode !== 'auto' || !state.meetingStarted || state.meetingEnded) return null;
-  const intent = detectHostedUserIntent(userText);
-  const mentionedNames = (intent.mentioned || [])
-    .map(key => CELEBRITIES[key]?.displayName)
-    .filter(Boolean);
-
-  if (intent.type === 'targeted-guests' && mentionedNames.length > 0) {
-    return `[系统通知] 主持型会议用户互动阶段：用户刚刚重点点名了${mentionedNames.map(name => `【${name}】`).join('、')}。请优先由这些嘉宾直接回应用户；若有必要，可由【风玲】用1-2句做自然串场，其他嘉宾只做简短补充。`;
-  }
-
-  if (intent.type === 'deepen') {
-    if (mentionedNames.length > 0) {
-      return `[系统通知] 主持型会议用户互动阶段：用户希望继续细化刚才的话题。请由【风玲】先提炼用户追问的焦点，再优先邀请${mentionedNames.map(name => `【${name}】`).join('、')}继续展开；必要时可补充1位最相关嘉宾，但不要直接总结。`;
-    }
-    return '[系统通知] 主持型会议用户互动阶段：用户希望继续细化当前议题。请由【风玲】先概括用户真正关心的焦点，再邀请2-3位最相关嘉宾围绕该焦点继续展开，不要直接总结。';
-  }
-
-  if (intent.type === 'user-opinion') {
-    return '[系统通知] 主持型会议用户互动阶段：用户刚刚表达了自己的判断或倾向。请让1-2位最相关嘉宾直接回应用户观点，可支持、补充或提出张力点；随后由【风玲】做简短收束，并根据讨论充分度决定是否继续追问。';
-  }
-
-  if (intent.type === 'general') {
-    return '[系统通知] 主持型会议用户互动阶段：用户已经参与了讨论。请先回应用户刚才的观点或问题，再由【风玲】自然衔接到最相关的嘉宾发言，不要跳过用户。';
-  }
-
-  return null;
-}
-
 function hostRequestedGuestFollowUp(text) {
   const t = String(text || '');
   return /请.{0,24}(谈谈|发言|回应|补充|分享|继续|先说)|你怎么看|谁先说|先回应/.test(t) && /【[^】]+】/.test(t);
@@ -778,240 +1139,25 @@ function shouldRequireGuestReplyFromHostByRegex(text) {
   return hasBracketMention || hasGroupHint || hasSelectedNameMention || endsLikeHandoff;
 }
 
-function extractJsonObject(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch (_) {}
-
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced && fenced[1]) {
-    try { return JSON.parse(fenced[1]); } catch (_) {}
-  }
-
-  const obj = raw.match(/\{[\s\S]*\}/);
-  if (obj && obj[0]) {
-    try { return JSON.parse(obj[0]); } catch (_) {}
-  }
-  return null;
+function truncateForPromptHostIntent(text, maxLen = 500) {
+  const t = String(text || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+  if (t.length <= maxLen) return t;
+  return t.slice(0, maxLen) + '…';
 }
 
-const hostIntentCache = new Map();
-const HOST_INTENT_CACHE_MAX = 60;
-const HOST_INTENT_TIMEOUT_MS = 2200;
-
-async function classifyHostIntentByLLM(hostText) {
-  const participants = state.selectedCelebrities
-    .map(k => CELEBRITIES[k]?.displayName)
-    .filter(Boolean);
-  if (!hostText || participants.length === 0) return null;
-
-  const cacheKey = `${participants.join('|')}::${String(hostText).trim()}`;
-  if (hostIntentCache.has(cacheKey)) {
-    return hostIntentCache.get(cacheKey);
-  }
-
-  try {
-    const response = await fetch(CONFIG.apiEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${CONFIG.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: CONFIG.model,
-        temperature: 0,
-        stream: false,
-        messages: [
-          {
-            role: 'system',
-            content: [
-              '你是圆桌会议主持人话术的意图分类器。判断主持人这段话的目标对象。',
-              '类别：',
-              '1) guest_invite —— 主持人面向某位"在场嘉宾"邀请发言/提问。',
-              '   典型特征：句中明确出现某位在场嘉宾的姓名/称呼（如"鲁迅先生"、"老子"、"庄子先生"），并向其抛出问题或请其继续发言。',
-              '   注意：当文本里出现嘉宾姓名 + "您/你"时，"您"指的是这位嘉宾本人，不是用户/听众，应判 guest_invite。',
-              '2) user_invite —— 主持人面向"用户/听众/观众/朋友们/各位"邀请发言。',
-              '   典型特征：没有点任何一位在场嘉宾的姓名，转而问"您怎么看 / 您的观点 / 大家觉得 / 朋友们 / 各位 / 听众"等开放式提问。',
-              '   只有不指向任何在场嘉宾时，才可判 user_invite。',
-              '3) none —— 主持人只是陈述/铺垫/收束，没有明确把话头交给任何一方。',
-              '识别优先级：只要句中包含任一在场嘉宾姓名，并出现求问、求观点、请发言的语气，必须判 guest_invite，不允许判 user_invite。',
-              '严禁把"鲁迅先生，您是否..."、"老子先生，您怎么看..."这类句子判为 user_invite。',
-              '严禁把"X先生"中的 X 误读成"先生"两字然后忽略嘉宾姓名。',
-              '只输出 JSON：{"intent":"guest_invite|user_invite|none","targets":["被邀请的在场嘉宾姓名"],"confidence":0-1}。',
-              'targets 只能从给定在场嘉宾里取；user_invite 时 targets 必须为空。'
-            ].join('\n')
-          },
-          {
-            role: 'user',
-            content: `在场嘉宾：${participants.join('、')}\n主持人文本：${hostText}`
-          }
-        ]
-      }),
-      signal: AbortSignal.timeout(HOST_INTENT_TIMEOUT_MS),
-    });
-
-    if (!response.ok) return null;
-    const data = await response.json();
-    const content = data?.choices?.[0]?.message?.content || '';
-    const parsed = extractJsonObject(content);
-    if (!parsed || typeof parsed !== 'object') return null;
-
-    const intent = ['guest_invite', 'user_invite', 'none'].includes(parsed.intent) ? parsed.intent : 'none';
-    const targets = Array.isArray(parsed.targets)
-      ? parsed.targets.filter(n => participants.includes(String(n)))
-      : [];
-    const confidence = Number(parsed.confidence);
-
-    const result = {
-      intent,
-      targets,
-      confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
-    };
-    hostIntentCache.set(cacheKey, result);
-    if (hostIntentCache.size > HOST_INTENT_CACHE_MAX) {
-      const oldest = hostIntentCache.keys().next().value;
-      if (oldest) hostIntentCache.delete(oldest);
-    }
-    return result;
-  } catch (_) {
-    return null;
-  }
-}
-
-function escapeRegex(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// 按中英文句末标点切分句子
-function splitIntoSentences(text) {
-  return String(text || '')
-    .split(/(?<=[。！？!?；;\n])\s*/)
-    .map(s => s.trim())
-    .filter(Boolean);
-}
-
-// 判断某一单句是邀请"嘉宾"还是"用户"，无法识别则返回 'none'
-function classifyInviteSentence(sentence) {
-  const s = String(sentence || '');
-  if (!s) return { kind: 'none' };
-  const names = state.selectedCelebrities
-    .map(k => CELEBRITIES[k]?.displayName)
-    .filter(Boolean);
-
-  const guestsInSentence = names.filter(n => s.includes(n));
-  const hasQuestion = /[？?]/.test(s);
-  const hasGuestInviteCue = /(请|想请|希望|听听|分享|谈谈|说说|聊聊|继续|补充|回应|回答|怎么看|觉得|的看法|的观点|的想法|展开说说|就此.*说)/.test(s);
-
-  // 句子里出现了在场嘉宾姓名 + 邀请/疑问语气 → 邀请嘉宾
-  if (guestsInSentence.length > 0 && (hasQuestion || hasGuestInviteCue)) {
-    return { kind: 'guest', guests: guestsInSentence };
-  }
-
-  // 邀请用户的强特征（无论有无嘉宾名都优先识别这种明确指向观众/听众的语气）
-  const strongUserCue =
-    /(在座的您|在座的你|(请问|想请问|我想请问|请教|冒昧|顺便)\s*(在座的)?[您你]|(您|你)\s*来\s*(说说|谈谈|分享|回答)|大家(怎么看|觉得|认为|有.*看法)|各位朋友|朋友们|观众|听众|诸位朋友|各位(听众|朋友|观众))/;
-  if (strongUserCue.test(s)) {
-    return { kind: 'user' };
-  }
-
-  // 句子里没有任何嘉宾名，而带有"您/你"问句 → 邀请用户
-  if (guestsInSentence.length === 0 && hasQuestion && /[您你]/.test(s)) {
-    // 避免误伤"您是否希望进入总结环节"这类主持人对用户的确认问句——其实也是邀请用户
-    return { kind: 'user' };
-  }
-
-  return { kind: 'none' };
-}
-
-// 启发式综合判定：整段主持人话术的邀请意图
-// 原则：**任一句识别为 user_invite → 整段 user_invite**（因为必须停下等用户）
-// 否则若任一句识别为 guest_invite → 整段 guest_invite
-// 都没有 → null（交给 LLM 或默认 none）
-function classifyHostIntentHeuristic(text) {
-  const sents = splitIntoSentences(text);
-  if (sents.length === 0) return null;
-  const results = sents.map(classifyInviteSentence);
-
-  if (results.some(r => r.kind === 'user')) {
-    return { intent: 'user_invite', targets: [], confidence: 0.9 };
-  }
-  const guestsAll = [];
-  for (const r of results) {
-    if (r.kind === 'guest' && Array.isArray(r.guests)) {
-      for (const g of r.guests) if (!guestsAll.includes(g)) guestsAll.push(g);
+/** 本条中全部【风玲】正文，供续写嘉宾时对齐「主持意图」 */
+function collectFenglingIntentFromParsed(parsed) {
+  if (!Array.isArray(parsed) || !parsed.length) return '';
+  const chunks = [];
+  for (const seg of parsed) {
+    if (seg && seg.key === 'fengling' && String(seg.text || '').trim()) {
+      chunks.push(String(seg.text).trim());
     }
   }
-  if (guestsAll.length > 0) {
-    return { intent: 'guest_invite', targets: guestsAll, confidence: 0.9 };
-  }
-  return null;
-}
-
-// 旧 API 保留：仅在会议中启发式兜底时会用到"整段是否点了嘉宾名"
-function detectExplicitlyAddressedGuests(hostText) {
-  const heur = classifyHostIntentHeuristic(hostText);
-  return heur && heur.intent === 'guest_invite' ? heur.targets : [];
-}
-
-async function decideHostFollowUpIntent(hostText) {
-  // 句子级启发式：user_invite 优先；guest_invite 次之
-  const heur = classifyHostIntentHeuristic(hostText);
-  if (heur) return heur;
-
-  // 启发式无结果 → 交 LLM
-  const llm = await classifyHostIntentByLLM(hostText);
-  if (llm && llm.intent !== 'none' && llm.confidence >= 0.5) {
-    // LLM 判 user_invite 但 targets 非空，校正为 guest_invite
-    if (llm.intent === 'user_invite' && Array.isArray(llm.targets) && llm.targets.length > 0) {
-      return { intent: 'guest_invite', targets: llm.targets, confidence: llm.confidence };
-    }
-    return llm;
-  }
-  return { intent: 'none', targets: [], confidence: (llm && llm.confidence) || 0 };
-}
-
-function buildGuestFollowUpPrompt(hostText, targets = []) {
-  const mentionedTargets = (targets && targets.length > 0)
-    ? targets
-    : extractMentionedSelectedCelebrities(hostText)
-        .map(k => CELEBRITIES[k]?.displayName)
-        .filter(Boolean);
-
-  const targetText = mentionedTargets.length > 0
-    ? `请优先由以下嘉宾依次发言：${mentionedTargets.join('、')}。`
-    : '请从在场嘉宾中选择与主持人刚才问题最匹配的2-3位嘉宾依次发言。';
-
-  return `[系统提示] 主持人已将话题交给嘉宾继续讨论。请直接续写嘉宾发言（使用【嘉宾名字】格式）。${targetText} 若观点尚未充分，可再补充1位嘉宾短回应；最后由风玲做简短收束并引导下一轮。`;
-}
-
-// ========== 主持人话术意图识别（LLM 优先，关键词仅作超时/失败兜底） ==========
-// 判断一段主持人文本是否是"邀请用户发言"
-// 完全依赖 LLM：先查缓存（classifyHostIntentByLLM 内置缓存），
-// LLM 返回 user_invite 且置信度 >= 0.5 视为邀请用户。
-// LLM 不可用时，使用极简兜底（仅防流程彻底卡住）。
-async function isHostInvitingUser(text) {
-  const t = String(text || '').trim();
-  if (!t) return false;
-
-  // 启发式硬否决：只要文本里"明确点名"了在场嘉宾，绝不算邀请用户（"鲁迅先生，您..."这类一律放行）
-  if (detectExplicitlyAddressedGuests(t).length > 0) {
-    return false;
-  }
-
-  try {
-    const llm = await classifyHostIntentByLLM(t);
-    if (llm && llm.intent === 'user_invite' && llm.confidence >= 0.5) {
-      // 即便 LLM 判了 user_invite，targets 非空说明其实点了嘉宾名
-      if (Array.isArray(llm.targets) && llm.targets.length > 0) return false;
-      return true;
-    }
-    if (llm) return false;
-  } catch (_) {}
-
-  // 极简兜底：LLM 超时/异常时，才使用有限关键词避免流程彻底卡死
-  return /[你您](怎么看|觉得|的看法|的观点|的想法)|听听[你您]|请[你您](分享|说说|谈谈)/.test(t);
+  return truncateForPromptHostIntent(chunks.join('\n'), 520);
 }
 
 // 兼容旧调用点：仅用于总结阶段识别（总结与用户邀请原本合并在一起）
@@ -1019,6 +1165,43 @@ function isHostSummaryText(text) {
   const t = String(text || '');
   if (!t) return false;
   return /会议总结如下|总结报告如下|核心观点如下|以下是.*总结/.test(t);
+}
+
+/** 用户可见的历史里，编排层注入的「系统」行不应当作「最后一句用户原话」 */
+function isInternalOrchestratorUserLine(content) {
+  const t = String(content || '').trim();
+  if (!t) return true; // 跳过，继续向前找
+  return t.startsWith('[系统通知]') || t.startsWith('[系统提示]');
+}
+
+/** 模型把【纠错/重试】后的内部语境复述成「风玲」的首段元道歉，仅剥离开头块 */
+function isLeadMetaFormatApologyBlock(block) {
+  const s = String(block || '').replace(/\s+/g, ' ').trim();
+  if (!s || s.length > 200) return false;
+  const hasTech =
+    /(收到.*提醒|提醒我|上一条|上轮|没按(「|"|'|”)?(格式|格式出牌)|按格式(走|来|输出)|对格式|系统.*(提醒|消息)|为格式|格式.*(疏忽|没按|错了))/.test(
+      s
+    );
+  const hasApology = /(抱歉|抱谦|对不住|不好意思|是我的疏忽|疏忽|出错)/.test(s);
+  if (s.length < 100 && hasTech && hasApology) return true;
+  if (hasTech && hasApology && /^(好[，,。…]|[对行]了[，,。]|是[，,。]|对[，,。]|[嗯好的]|收到)/.test(s)) {
+    return true;
+  }
+  if (s.length < 80 && hasApology && /(没按|按格式|提醒|系统提示|系统通知|格式).{0,20}(错|了|的)/.test(s)) {
+    return true;
+  }
+  return false;
+}
+
+function stripLeadHostMetaApologyBlocks(text) {
+  const parts = String(text || '').split(/\n\n+/);
+  while (parts.length > 1 && isLeadMetaFormatApologyBlock(parts[0])) {
+    parts.shift();
+  }
+  if (parts.length === 1 && isLeadMetaFormatApologyBlock(parts[0])) {
+    return '';
+  }
+  return parts.join('\n\n').trim();
 }
 
 function beautifyHostContent(content) {
@@ -1033,6 +1216,9 @@ function beautifyHostContent(content) {
   text = text.replace(/（\s*增[、,，]\s*删[、,，]\s*替换\s*）/g, '');
   text = text.replace(/（\s*增加[、,，]\s*删除[、,，]\s*替换\s*）/g, '');
 
+  // 剥离开头「收到提醒/没按格式/抱歉」类元话（不依赖括号包裹）
+  text = stripLeadHostMetaApologyBlocks(text);
+
   // 屏蔽对用户可见的内部轮次表述
   text = text.replace(/第\s*[0-9一二三四五六七八九十]+\s*轮/g, '接下来的讨论');
   text = text.replace(/最后一轮/g, '最后这段讨论');
@@ -1046,11 +1232,88 @@ function beautifyHostContent(content) {
 function getLastUserQuestion() {
   for (let i = state.messages.length - 1; i >= 0; i--) {
     const msg = state.messages[i];
-    if (msg.role === 'user' && msg.content && !msg.content.startsWith('[系统通知]')) {
+    if (msg.role === 'user' && msg.content && !isInternalOrchestratorUserLine(msg.content)) {
       return msg.content.trim();
     }
   }
   return '';
+}
+
+/** 导出长图文件名：第一条可见用户提问（去掉「用户原话：」）；优先 state，若无则从 DOM 第一条用户气泡读取 */
+function getFirstUserQuestionForExportName() {
+  for (let i = 0; i < state.messages.length; i++) {
+    const msg = state.messages[i];
+    if (msg.role === 'user' && msg.content && !isInternalOrchestratorUserLine(msg.content)) {
+      let t = String(msg.content).trim();
+      t = t.replace(/^用户原话[：:]\s*/i, '');
+      const trimmed = t.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+  const bubble =
+    typeof chatArea !== 'undefined' && chatArea
+      ? chatArea.querySelector('.message.user .message-bubble')
+      : null;
+  if (bubble) {
+    let t = bubble.innerText.trim();
+    t = t.replace(/^用户原话[：:]\s*/i, '');
+    const trimmed = t.trim();
+    if (trimmed) return trimmed;
+  }
+  return '';
+}
+
+function sanitizeExportImageBasename(raw, maxChars) {
+  let t = String(raw || '').trim();
+  t = t.replace(/[\r\n]+/g, ' ');
+  t = t.replace(/[/\\:*?"<>|#\u0000-\u001f]/g, '');
+  t = t.replace(/\s+/g, ' ');
+  const chars = [...t];
+  if (chars.length > maxChars) t = chars.slice(0, maxChars).join('');
+  return t.replace(/\.+$/, '').trim();
+}
+
+function buildExportImageFilename() {
+  const pad = (n) => String(n).padStart(2, '0');
+  const d = new Date();
+  const fallback = `圆桌会-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
+  const base =
+    sanitizeExportImageBasename(getFirstUserQuestionForExportName(), 20) || fallback;
+  return `${base}.png`;
+}
+
+/**
+ * 优先走系统分享中的「存储到照片 / 保存图片」（Web Share Level 2），以便写入手机相册；
+ * 不支持或用户取消时再退回 `<a download>`。
+ */
+async function saveImageBlobToAlbumOrDownload(blob, filename) {
+  const file = new File([blob], filename, { type: blob.type || 'image/png' });
+  try {
+    if (
+      typeof navigator.share === 'function' &&
+      typeof navigator.canShare === 'function' &&
+      navigator.canShare({ files: [file] })
+    ) {
+      await navigator.share({
+        files: [file],
+        title: filename.replace(/\.png$/i, ''),
+      });
+      showToast('长图已保存');
+      return;
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('长图已下载');
 }
 
 function getRecommendationReason(rawContent, key) {
@@ -1102,8 +1365,44 @@ function getRecommendationTitle(rawContent, key) {
   return '';
 }
 
+/** 会前用户话是否像闲聊/测问，而非讨论主题或组局 */
+function isPreMeetingChitChat(topic) {
+  const t = String(topic || '').trim();
+  if (!t) return false;
+  // 命题式、议题式提问 → 非闲聊，应进入「直出嘉宾推荐」提示
+  if (
+    /(什么是|為什麼|为什么|为何|怎么|如何|怎看|怎樣|谈谈|谈一谈|论一论|分析|看待|理解|探讨|辨析|意义|本质|观点|评价|比较|利弊|是否|该不该|能不能(?!讲|说故事)|请讲|说说).{0,80}/.test(t)
+    || /^(论|谈|析|评)/.test(t)
+  ) {
+    return false;
+  }
+  if (t.length > 100) return false;
+  if (/(讨论|分析|圆桌|会议|嘉宾|推荐|名单|换一批|经济|公司|市场|战略|管理|投资|创业|政策|行业|如何|怎么|是否|该不该|能不能帮|话题)/.test(t)) {
+    return false;
+  }
+  if (/(讲(个)?故事|讲(个)?笑话|讲一段|会讲|会说|会唱|会画|聊天|唠嗑|测你|考你|逗我|哄我)/.test(t)) return true;
+  if (t.length < 40 && /(吗|么|呢|吧|呀)[？?！!。.…\s]*$/.test(t)) {
+    if (/(你|我|能|会|在吗|好|谁|什)/.test(t) && t.length < 30) return true;
+  }
+  if (/^(你好|嗨|哈喽|在吗|早|晚好|谢)/.test(t) && t.length < 20) return true;
+  if (/^(随便|聊聊|陪我|好无聊|唠)/.test(t) && t.length < 24) return true;
+  return false;
+}
+
 function buildHostOpeningForTopic(topic) {
   const t = String(topic || '').trim();
+  if (isPreMeetingChitChat(t)) {
+    if (/讲(个)?故事|故事/.test(t)) {
+      return '能啊。你要听**偏轻**一点的，还是带一点**观点/隐喻**的小段？给我一个字或一个主题词，我就像朋友聊天那样讲。';
+    }
+    if (/讲(个)?笑话|笑话|逗我/.test(t)) {
+      return '行，我用口语说个短的。你要是接下来想**正经开一场讨论**，再丢我一个题目，我帮你从名人里组局。';
+    }
+    if (/在吗|你好|嗨|早|晚好/.test(t)) {
+      return '在呢。我这边是圆桌主持风玲，你既可以跟我随便聊两句，也可以直接说想讨论的话题，我来帮你选嘉宾。';
+    }
+    return '我接着聊就好，语气会像面对面说话一样。\n你要是接下来有想深聊的**题目**，告诉我就行，我再按题目从名人里给你组桌。';
+  }
   if (!t) {
     return '这是个值得慢慢展开的问题。\n我们不急着给结论，先把不同立场摆到同一张桌面上，再看答案会落向哪里。';
   }
@@ -1131,6 +1430,11 @@ function buildPreMeetingClosing() {
   return closings[Math.floor(Math.random() * closings.length)];
 }
 
+/** 会前推荐展示稿：库外名人可由模型写入【】并由 ensureCelebrityEntry 收纳，不再按「仅库内」整行隐藏 */
+function stripPreMeetingLinesWithUnknownLibraryBrackets(text) {
+  return text;
+}
+
 function buildPreMeetingHostMessage(rawContent) {
   const rawText = String(rawContent || '').trim();
   const recommended = extractRecommendationKeys(rawContent).slice(0, 10);
@@ -1149,12 +1453,17 @@ function buildPreMeetingHostMessage(rawContent) {
   const topic = getLastUserQuestion();
   const topicLine = buildHostOpeningForTopic(topic);
 
-  // 优先保留模型的自然回复，避免会前阶段被强模板化
+  // 已解析到 ≥2 人：有收束/开场 CTA，或长文(≥40字)时保留模型自然输出，避免长模板强盖
   if (rawText) {
     const hasStartPrompt = /开始会议|是否开始|要不要开始|是否满意|增删|替换/.test(rawText);
-    const hasAtLeastTwoGuests = names.length >= 2;
-    if (hasAtLeastTwoGuests && hasStartPrompt) {
-      return beautifyHostContent(rawText);
+    const cleaned = stripPreMeetingLinesWithUnknownLibraryBrackets(beautifyHostContent(rawText));
+    const useNaturalWithGuests =
+      names.length >= 2 && (rawText.trim().length >= 40 || hasStartPrompt);
+    // 尚未解析到 ≥2 个【】时：若模型已生成成段有效正文，**直接**展示，避免用「3～5 人」模板盖住闲聊/短答
+    const compact = cleaned.replace(/\s/g, '');
+    const useNaturalSolo = names.length < 2 && compact.length >= 10;
+    if (useNaturalWithGuests || useNaturalSolo) {
+      return cleaned;
     }
   }
 
@@ -1177,12 +1486,8 @@ function buildPreMeetingHostMessage(rawContent) {
     return `${topicLine}\n\n我这边先说明一下：库外人选只接受真实名人姓名，像“李教授 / 王女士 / 张律师”这类泛称我不会纳入。\n你可以直接给我具体人名（例如“某某某”），我再按真实人物为你重组名单。`;
   }
 
-  if (!state.allowExternalCelebrities) {
-    state.pendingExternalApproval = true;
-    return `${topicLine}\n\n我在当前名人库里，暂时还没拼出足够贴题的一组嘉宾。\n你希望我可以补充推荐名人库之外的人选吗？你也可以直接告诉我想邀请谁，我按你的指定来组局。`;
-  }
-
-  return `${topicLine}\n\n我正在为你补充筛选更贴题的嘉宾组合。你也可以直接点名希望邀请的人，我会优先纳入推荐。`;
+  // 默认：仍以名人库为主；用户若点名库外真实人物，可直接写入【】并给出理由
+  return `${topicLine}\n\n请从名人库中按与话题的匹配度**从高到低**选出 **3～5 位**（人数可随机），用【名字】输出完整名单。\n若用户已点名某位**名人库以外的真实人物**，请一并写入【】名单并补充可查的头衔与推荐理由。`;
 }
 
 function formatMessageTime(date = new Date()) {
@@ -1213,7 +1518,8 @@ function autoParagraphizeContent(content) {
 
   // 已有结构化内容时，不做自动重排
   const hasStructuredBlocks = /\n\s*\n/.test(text)
-    || /(^|\n)\s*(#{1,4}\s+|[-*•]\s+|\d+[\.\)]\s+)/.test(text);
+    || /(^|\n)\s*(#{1,4}\s+|[-*•]\s+|\d+[\.\)]\s+)/.test(text)
+    || /(^|\n)\s*\|[^|\n\r]+(\|[^|\n\r]+){1,}/.test(text);
   if (hasStructuredBlocks) return text;
 
   // 无明显结构时，按句号级标点每2句自动分段，提升移动端可读性
@@ -1234,16 +1540,119 @@ function autoParagraphizeContent(content) {
   return grouped.join('\n\n');
 }
 
+function splitPipeTableRow(line) {
+  const t = String(line).trim();
+  if (!t.includes('|')) return [t];
+  let s = t;
+  if (!s.startsWith('|')) s = '|' + s;
+  if (!s.endsWith('|')) s = s + '|';
+  return s
+    .split('|')
+    .slice(1, -1)
+    .map(c => c.trim());
+}
+
+function isPipeTableSeparatorLine(line) {
+  const cells = splitPipeTableRow(line);
+  if (cells.length < 2) return false;
+  return cells.every(c => c.length > 0 && /^:?\s*-{3,}\s*:?$/.test(c));
+}
+
+function isPipeTableRowLine(line) {
+  const t = String(line).trim();
+  if (!t.includes('|')) return false;
+  if (isPipeTableSeparatorLine(t)) return true;
+  return splitPipeTableRow(t).length >= 2;
+}
+
+/**
+ * 从 rawLines[i] 起解析 GFM 风格 | 管道表格，至少 2 行（可含 |---| 分隔行）
+ * @returns {{ html: string, nextIndex: number } | null}
+ */
+function tryParsePipeTableAt(rawLines, i) {
+  if (i >= rawLines.length) return null;
+  const first = String(rawLines[i] || '').trim();
+  if (!isPipeTableRowLine(first) || isPipeTableSeparatorLine(first)) return null;
+
+  const segment = [];
+  let j = i;
+  while (j < rawLines.length) {
+    const L = String(rawLines[j] || '').trim();
+    if (!L) break;
+    if (!isPipeTableRowLine(L)) break;
+    segment.push(L);
+    j++;
+  }
+  if (segment.length < 2) return null;
+
+  let headCells;
+  let bodyRowCells;
+  if (segment.length >= 2 && isPipeTableSeparatorLine(segment[1])) {
+    headCells = splitPipeTableRow(segment[0]);
+    bodyRowCells = segment.slice(2).map(splitPipeTableRow);
+  } else {
+    headCells = null;
+    bodyRowCells = segment.map(splitPipeTableRow);
+  }
+
+  if (!bodyRowCells.length && !headCells) return null;
+
+  return { html: buildPipeTableHtml(headCells, bodyRowCells), nextIndex: j };
+}
+
+function buildPipeTableHtml(headerCells, bodyRows) {
+  const hLen = (headerCells && headerCells.length) || 0;
+  const fromBody = bodyRows.length ? Math.max(...bodyRows.map(r => r.length), 0) : 0;
+  const colCount = Math.max(1, hLen, fromBody);
+
+  const norm = row => {
+    const a = row.slice(0, colCount);
+    const out = a.slice();
+    while (out.length < colCount) out.push('');
+    return out;
+  };
+
+  let h = '<div class="rt-table-wrap"><table class="rt-md-table">';
+  if (headerCells && headerCells.length) {
+    h +=
+      '<thead><tr>' +
+      norm(headerCells)
+        .map(c => `<th>${formatInlineText(c)}</th>`)
+        .join('') +
+      '</tr></thead>';
+  }
+  h += '<tbody>';
+  for (const row of bodyRows) {
+    h +=
+      '<tr>' +
+      norm(row)
+        .map(c => `<td>${formatInlineText(c)}</td>`)
+        .join('') +
+      '</tr>';
+  }
+  h += '</tbody></table></div>';
+  return h;
+}
+
 function formatMessageContent(content) {
   const normalized = autoParagraphizeContent(content);
   const lines = normalized.split('\n');
   const blocks = [];
   let listIndex = 0;
 
-  for (const rawLine of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i];
     const line = rawLine.trim();
     if (!line) {
       blocks.push('<div class="rt-gap"></div>');
+      continue;
+    }
+
+    const tableBlock = tryParsePipeTableAt(lines, i);
+    if (tableBlock) {
+      blocks.push(tableBlock.html);
+      i = tableBlock.nextIndex - 1;
+      listIndex = 0;
       continue;
     }
 
@@ -1300,25 +1709,19 @@ const headerSubtitle = document.getElementById('headerSubtitle');
 // 更多菜单
 const moreBtn = document.getElementById('moreBtn');
 const moreMenu = document.getElementById('moreMenu');
-const menuSettingsBtn = document.getElementById('menuSettingsBtn');
 const menuPauseBtn = document.getElementById('menuPauseBtn');
 const menuPauseText = document.getElementById('menuPauseText');
 const menuRestartBtn = document.getElementById('menuRestartBtn');
 const menuHistoryBtn = document.getElementById('menuHistoryBtn');
 const menuNewMeetingBtn = document.getElementById('menuNewMeetingBtn');
 const menuShareBtn = document.getElementById('menuShareBtn');
+const menuShareConversationBtn = document.getElementById('menuShareConversationBtn');
+const menuExportLongImgBtn = document.getElementById('menuExportLongImgBtn');
 // 暂停横幅
 const pauseBanner = document.getElementById('pauseBanner');
 const resumeLink = document.getElementById('resumeLink');
 // 输入区域
 const inputArea = document.querySelector('.input-area');
-// 设置
-const settingsModal = document.getElementById('settingsModal');
-const closeSettingsBtn = document.getElementById('closeSettingsBtn');
-const settingsCancelBtn = document.getElementById('settingsCancelBtn');
-const settingsSaveBtn = document.getElementById('settingsSaveBtn');
-const settingsModelList = document.getElementById('settingsModelList');
-const settingsModeList = document.getElementById('settingsModeList');
 // 历史
 const historyPanel = document.getElementById('historyPanel');
 const historyCloseBtn = document.getElementById('historyCloseBtn');
@@ -1341,26 +1744,27 @@ const stopBtn = document.getElementById('stopBtn');
 const voiceToggleBtn = document.getElementById('voiceToggleBtn');
 
 // ========== 初始化 ==========
-function init() {
-  // 确保 sessionStorage 中的 sessionId 与 state 同步
+async function init() {
+  getOrCreateUserId();
+  migrateHistoryIfNeeded();
   sessionStorage.setItem('roundtable_session_id', state.sessionId);
-  setActiveModel(CONFIG.model, { persist: false });
-  setActiveMeetingFlowMode(state.meetingFlowMode, { persist: false });
-  
-  // 初始化语音模块
-  if (typeof initVoice === 'function') {
-    initVoice();
+
+  if (typeof initVoice === 'function') initVoice();
+
+  buildCelebrityPanel();
+  bindEvents();
+
+  const hydrated = await tryHydrateShareFromUrl();
+  if (hydrated) {
+    if (typeof logVisit === 'function') logVisit();
+    return;
   }
-  
-  // 合并 slogan 和欢迎语为一条消息
+
   const randomSlogan = SLOGANS[Math.floor(Math.random() * SLOGANS.length)];
   const combinedMessage = randomSlogan + '\n\n' + WELCOME_MESSAGE;
   addSpeakerMessage('风玲', combinedMessage, 'fengling');
   state.hostIntroShown = true;
-  
-  buildCelebrityPanel();
-  renderSettingsOptions();
-  bindEvents();
+
   messageInput.focus();
 
   if (typeof logVisit === 'function') logVisit();
@@ -1398,12 +1802,23 @@ function bindEvents() {
   moreMenu.addEventListener('click', (e) => e.stopPropagation());
 
   // 菜单项
-  menuSettingsBtn.addEventListener('click', openSettingsModal);
   menuPauseBtn.addEventListener('click', togglePause);
   menuRestartBtn.addEventListener('click', handleRestart);
   menuHistoryBtn.addEventListener('click', openHistoryPanel);
   menuNewMeetingBtn.addEventListener('click', handleNewMeeting);
   menuShareBtn.addEventListener('click', () => { moreMenu.classList.remove('active'); openShareModal(); });
+  if (menuShareConversationBtn) {
+    menuShareConversationBtn.addEventListener('click', () => {
+      moreMenu.classList.remove('active');
+      shareConversationAsText();
+    });
+  }
+  if (menuExportLongImgBtn) {
+    menuExportLongImgBtn.addEventListener('click', () => {
+      moreMenu.classList.remove('active');
+      exportConversationLongImage();
+    });
+  }
 
   // 暂停横幅
   resumeLink.addEventListener('click', () => { if (state.isPaused) togglePause(); });
@@ -1415,13 +1830,51 @@ function bindEvents() {
     if (e.target === shareModal) closeShareModal();
   });
 
-  // 设置
-  closeSettingsBtn.addEventListener('click', closeSettingsModal);
-  settingsCancelBtn.addEventListener('click', closeSettingsModal);
-  settingsSaveBtn.addEventListener('click', applySettings);
-  settingsModal.addEventListener('click', (e) => {
-    if (e.target === settingsModal) closeSettingsModal();
-  });
+  const conversationShareSheetModalEl = document.getElementById('conversationShareSheetModal');
+  const closeConversationShareSheetBtn = document.getElementById('closeConversationShareSheetBtn');
+  const shareSheetFriendBtn = document.getElementById('shareSheetFriendBtn');
+  const shareSheetMomentBtn = document.getElementById('shareSheetMomentBtn');
+  const shareSheetCopyBtn = document.getElementById('shareSheetCopyBtn');
+  if (closeConversationShareSheetBtn && conversationShareSheetModalEl) {
+    closeConversationShareSheetBtn.addEventListener('click', closeConversationShareSheet);
+    conversationShareSheetModalEl.addEventListener('click', (e) => {
+      if (e.target === conversationShareSheetModalEl) closeConversationShareSheet();
+    });
+  }
+  const shareTitleForNative = () =>
+    (document.getElementById('shareSheetTitle')?.textContent || '光年之约圆桌会').trim();
+  const shareDescForNative = () => '光年之约圆桌会 · 点此链接查看完整对话';
+
+  if (shareSheetFriendBtn) {
+    shareSheetFriendBtn.addEventListener('click', async () => {
+      const title = shareTitleForNative();
+      const shared = await sharePendingUrlViaNativeIfPossible(title, shareDescForNative());
+      if (shared) {
+        closeConversationShareSheet();
+        return;
+      }
+      await copyRichPendingShareAndToast('friend');
+      closeConversationShareSheet();
+    });
+  }
+  if (shareSheetMomentBtn) {
+    shareSheetMomentBtn.addEventListener('click', async () => {
+      const title = shareTitleForNative();
+      const shared = await sharePendingUrlViaNativeIfPossible(title + ' · 圆桌对话', shareDescForNative());
+      if (shared) {
+        closeConversationShareSheet();
+        return;
+      }
+      await copyRichPendingShareAndToast('moment');
+      closeConversationShareSheet();
+    });
+  }
+  if (shareSheetCopyBtn) {
+    shareSheetCopyBtn.addEventListener('click', async () => {
+      await copyPendingShareUrlAndToast('链接已复制');
+      closeConversationShareSheet();
+    });
+  }
 
   // 历史
   historyCloseBtn.addEventListener('click', closeHistoryPanel);
@@ -1458,61 +1911,86 @@ function handleInterrupt() {
   }
 }
 
-// ========== 发送消息 ==========
-async function handleSend() {
-  const text = messageInput.value.trim();
-  if (!text || state.isGenerating || state.isPaused) return;
+/** 会议已结束后，用户想「另开一场 / 新会议」——与菜单「新建会议」同语义，可自然语言表达 */
+function isWantsNewMeetingAfterEnd(text) {
+  const t = String(text || '').trim();
+  return /(换一[组批波]|重新推荐|再推荐|换.*嘉宾|换.*名人|新.*话题|换个话题|重新开始|新的讨论|再开一场|开个新.*会|讨论.*新.*问题|聊.*别的|新会议|新的会议|另开|新开|重开|另起|再来一场|重新开会|新一场|新开会|想开.*新|开始.*新.*会|新建会议|再组.*局|开.*新会)/.test(t);
+}
 
-  messageInput.value = '';
-  autoResizeTextarea();
-  sendBtn.disabled = true;
-
-  addUserMessage(text);
-  state.messages.push({ role: 'user', content: text });
-  state.autoContinueRetries = 0;
-  state.autoContinueDepth = 0;
-  // 用户回复了：清掉"邀请用户挂起计数"和"主持人发言历史去重池"
-  state.consecutiveUserInvitePending = 0;
-  state.recentHostUtterances = [];
-
-  // 主持人模式：会议已结束后，用户要求换话题/换嘉宾/重新开始 → 重置为会前状态
-  if (state.selectionMode === 'auto' && state.meetingEnded) {
-    const wantsNewMeeting = isLikelyNewMeetingRequest(text);
-    const wantsNewGuests = /(重新推荐|再推荐|换.*嘉宾|换.*名人)/.test(text);
-    if (wantsNewMeeting) {
-      state.meetingEnded = false;
-      state.autoContinueRetries = 0;
-      if (wantsNewGuests || state.selectedCelebrities.length === 0) {
-        restartHostedConversationContext(text);
-        state.meetingStarted = false;
-        state.selectedCelebrities = [];
-        state.removedCelebrities.clear();
-        state.allowExternalCelebrities = false;
-        state.pendingExternalApproval = false;
-        state.lastRejectedExternalNames = [];
-        resetHostedMeetingProgress();
-        updateGuestBar();
-        headerSubtitle.textContent = '等待主持人推荐嘉宾';
-        state.messages.push({
-          role: 'system',
-          content: '[系统通知] 用户要求开始新一场会议。请以主持人【风玲】身份确认用户的新话题，然后根据新话题重新推荐嘉宾（使用【名字】格式），输出完整推荐名单（含头衔和推荐理由），并询问用户是否满意。'
-        });
-        addSystemNotice('好的，为你开启新一场会议');
-      } else {
-        restartHostedConversationContext(text);
-        state.meetingStarted = true;
-        resetHostedMeetingProgress();
-        updateGuestBar();
-        headerSubtitle.textContent = `${state.selectedCelebrities.length} 位嘉宾已确认，${getHostedMeetingModeLabel()}重新开始`;
-        state.messages.push({
-          role: 'system',
-          content: '[系统通知] 用户抛出了新的议题。请由【风玲】先判断当前在场嘉宾是否仍然适合这个新议题：若合适，则沿用当前嘉宾直接重新开启第一轮讨论；若明显不匹配，再自然建议用户调整嘉宾名单。'
-        });
-        addSystemNotice('新的议题已接入，沿用当前嘉宾继续开场');
-      }
-    }
+/**
+ * 会后 → 新会议：归档、换 session、清空聊天上下文，只保留系统说明 + 本条用户话，再进入**会前名人推荐**。
+ */
+async function beginNewMeetingFromEndedSession(text) {
+  saveCurrentToHistory();
+  if (state.isGenerating && state.abortController) {
+    state.abortController.abort();
+  }
+  if (typeof stopSpeaking === 'function') {
+    stopSpeaking();
   }
 
+  state.sessionId = Date.now().toString(36);
+  try {
+    sessionStorage.setItem('roundtable_session_id', state.sessionId);
+  } catch (_) {}
+
+  state.meetingStarted = false;
+  state.meetingEnded = false;
+  state.selectedCelebrities = [];
+  state.pendingSelection = [];
+  state.removedCelebrities.clear();
+  state.allowExternalCelebrities = false;
+  state.pendingExternalApproval = false;
+  state.pendingInviteCelebrityVerify = null;
+  state.pendingInviteReplaceOldKey = null;
+  state.lastRejectedExternalNames = [];
+  state.hostedRound = 0;
+  state.awaitingEndConfirmation = false;
+  state.summaryReady = false;
+  state.autoContinueRetries = 0;
+  state.autoContinueDepth = 0;
+  state.consecutiveUserInvitePending = 0;
+  state.s3BridgeFromGuestInFlight = false;
+  state.suppressHostedRoundBumpAfterThisTurn = false;
+  state.stage3GuestAllowlistKeys = null;
+  state.stage3UnscopedCatchupUsed = false;
+  hostFlowResetLock();
+  state.recentHostUtterances = [];
+  state.isGenerating = false;
+  state.abortController = null;
+  state.isPaused = false;
+  state.hostIntroShown = false;
+
+  state.messages = [
+    {
+      role: 'system',
+      content:
+        '[系统通知] 上一场会议已结束并**已归档到历史**。当前为**一场全新会议**的会前阶段：请**只根据本条用户消息**中的新话题或意图，从名人库推荐 3～5 位嘉宾，使用【名字】完整格式（含头衔、推荐理由）并问用户是否满意。**禁止**延续上一场名单、转述上场总结、或把旧结论带入推荐。',
+    },
+    { role: 'user', content: text },
+  ];
+
+  chatArea.innerHTML = '';
+  clearStreamMessages();
+  addSystemNotice('上一场已保存到历史，已开启新会议');
+  addUserMessage(text);
+
+  guestBar.style.display = 'none';
+  guestScroll.innerHTML = '';
+  updateGuestBar();
+  headerSubtitle.textContent = '等待主持人推荐嘉宾';
+  if (typeof buildCelebrityPanel === 'function') {
+    buildCelebrityPanel();
+  }
+
+  await processUserTurnAfterCommit(text);
+}
+
+/** 用户消息已写入 `state.messages` 之后：会前意图、第三段流程图、联网补全、再生成 */
+async function processUserTurnAfterCommit(text) {
+  if (state.selectionMode === 'auto' && state.meetingStarted) {
+    state.stage3GuestAllowlistKeys = null;
+  }
   // 主持人模式会前：意图感知处理（添加/删除/替换/重新推荐/开始等）
   if (state.selectionMode === 'auto' && !state.meetingStarted) {
     const preMeetingIntent = detectPreMeetingIntent(text);
@@ -1537,6 +2015,10 @@ async function handleSend() {
       markHostedMeetingStarted();
       addSystemNotice('已确认嘉宾名单，会议正式开始');
     } else if (preMeetingIntent.type === 're-recommend') {
+      state.pendingExternalApproval = false;
+      state.allowExternalCelebrities = false;
+      state.pendingInviteCelebrityVerify = null;
+      state.pendingInviteReplaceOldKey = null;
       state.selectedCelebrities = [];
       state.removedCelebrities.clear();
       updateGuestBar();
@@ -1544,84 +2026,97 @@ async function handleSend() {
       if (preMeetingIntent.systemMsg) {
         state.messages.push({ role: 'system', content: preMeetingIntent.systemMsg });
       }
-    } else if (preMeetingIntent.type === 'add-external') {
-      state.pendingExternalApproval = false;
+    } else if (
+      ['replace', 'remove', 'add', 'adjust-direction'].includes(preMeetingIntent.type) &&
+      preMeetingIntent.systemMsg
+    ) {
+      state.messages.push({ role: 'system', content: preMeetingIntent.systemMsg });
+      if (preMeetingIntent.type === 'add' && preMeetingIntent.names?.length) {
+        addSystemNotice(`${preMeetingIntent.names[0]} 已加入推荐名单`);
+      } else if (preMeetingIntent.type === 'remove' && preMeetingIntent.names?.length) {
+        addSystemNotice(`${preMeetingIntent.names[0]} 已从推荐名单移除`);
+      } else if (preMeetingIntent.type === 'replace' && preMeetingIntent.oldName && preMeetingIntent.newName) {
+        addSystemNotice(`已将「${preMeetingIntent.oldName}」替换为「${preMeetingIntent.newName}」`);
+      }
+    } else if (preMeetingIntent.type === 'invite-celebrity-verify') {
       if (preMeetingIntent.systemMsg) {
         state.messages.push({ role: 'system', content: preMeetingIntent.systemMsg });
       }
-      if (preMeetingIntent.names && preMeetingIntent.names[0]) {
-        addSystemNotice(`正在添加 ${preMeetingIntent.names[0]} 到推荐名单`);
+      if (preMeetingIntent.names?.[0]) {
+        addSystemNotice(`「${preMeetingIntent.names[0]}」待确认是否为公众人物`);
       }
-    } else if (preMeetingIntent.systemMsg) {
-      state.messages.push({ role: 'system', content: preMeetingIntent.systemMsg });
-      if (preMeetingIntent.type === 'remove' && preMeetingIntent.names) {
-        addSystemNotice(`${preMeetingIntent.names[0]} 已从推荐名单移除`);
-      } else if (preMeetingIntent.type === 'add' && preMeetingIntent.names) {
-        addSystemNotice(`${preMeetingIntent.names[0]} 已加入推荐名单`);
+    } else if (preMeetingIntent.type === 'invite-celebrity-verify-cancelled') {
+      if (preMeetingIntent.systemMsg) {
+        state.messages.push({ role: 'system', content: preMeetingIntent.systemMsg });
       }
+      addSystemNotice('已按你的说明处理名单');
     }
   }
 
-  // 主持人模式：收尾确认阶段，优先处理用户"结束/继续"决定
-  if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded && state.awaitingEndConfirmation) {
-    if (isAffirmativeEndReply(text)) {
+  // 流程图：第三段（hostedRound>=2）每条用户话经大模型判 D/A/B/C/U；非 D 时**本轮**必写入发言白名单（显式点名 / 全员 / 或由系统推断 1～2 人）
+  if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded && (state.hostedRound || 0) >= 2) {
+    let fc = { branch: 'U', namedKeys: [] };
+    try {
+      fc = await classifyFlowchartStage3UserIntent(text);
+    } catch (e) {
+      console.warn('[流程图] 第三段用户分支', e);
+      fc = { branch: 'U', namedKeys: [] };
+    }
+    const br = fc.branch;
+    const activeGuests = getActiveGuestKeys();
+
+    if (br === 'D') {
       state.awaitingEndConfirmation = false;
-      state.awaitingUserPerspective = false;
       state.summaryReady = true;
-      state.messages.push({
-        role: 'system',
-        content: '[系统通知] 用户已确认可以结束会议。请注意：本次回复必须且只能由【风玲】输出结构化会议总结报告（核心观点/共识分歧/本场新组合洞见）。嘉宾在总结环节不得发言，整个回复只有风玲一个人说话。总结后会议即结束。'
-      });
-    } else if (isNegativeEndReply(text)) {
-      state.awaitingEndConfirmation = false;
-      state.awaitingUserPerspective = false;
-      state.summaryReady = false;
-      state.hostedStage = 'user-interaction';
-      state.messages.push({
-        role: 'system',
-        content: '[系统通知] 用户选择继续讨论。请继续下一轮互动讨论，重点挖掘新见解，避免重复表述。'
-      });
-    }
-  }
-
-  if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded && !state.awaitingEndConfirmation) {
-    const hostedIntent = detectHostedUserIntent(text);
-
-    if (hostedIntent.type === 'new-topic') {
-      restartHostedConversationContext(text);
-      resetHostedMeetingProgress();
-      state.meetingStarted = true;
-      state.meetingEnded = false;
-      headerSubtitle.textContent = `${state.selectedCelebrities.length} 位嘉宾已确认，围绕新议题重新开场`;
-      state.messages.push({
-        role: 'system',
-        content: '[系统通知] 用户发起了一个新的议题。请由【风玲】承接这个新议题，并在沿用当前嘉宾的前提下重新开启第一轮讨论；若当前嘉宾与新议题明显不匹配，再自然提醒用户可调整名单。'
-      });
-    } else if (hostedIntent.type === 'end') {
-      if (canSummarizeCurrentHostedMeeting()) {
+      state.stage3GuestAllowlistKeys = null;
+      state.messages.push({ role: 'system', content: FLOWCHART_MSG.D });
+    } else {
+      if (br !== 'U') {
         state.awaitingEndConfirmation = false;
-        state.awaitingUserPerspective = false;
-        state.hostedStage = 'user-interaction';
-        state.summaryReady = true;
-        state.messages.push({
-          role: 'system',
-          content: '[系统通知] 用户主动要求结束并做总结。请注意：本次回复必须且只能由【风玲】输出结构化会议总结报告（核心观点/共识分歧/本场新组合洞见）。嘉宾在总结环节不得发言，整个回复只有风玲一个人说话。总结后会议即结束。'
-        });
-      } else {
-        state.messages.push({
-          role: 'system',
-          content: state.meetingFlowMode === 'three-round'
-            ? '[系统通知] 用户想尽快总结，但当前三轮会谈尚未完成必要的用户参与环节。请先承接用户的收束意图，再邀请用户或最相关嘉宾完成必要的第三阶段互动，不要直接总结。'
-            : '[系统通知] 用户想尽快总结，但当前讨论仍未充分。请先承接用户意图，再补充一轮最有价值的讨论，不要直接输出总结报告。'
-        });
+        state.summaryReady = false;
       }
-    } else if (state.awaitingUserPerspective || state.hostedStage === 'user-interaction' || state.hostedStage === 'round3' || state.userParticipationCount > 0) {
-      state.awaitingUserPerspective = false;
-      state.hostedStage = 'user-interaction';
-      state.userParticipationCount += 1;
-      const hostedDirective = buildHostedUserIntentDirective(text);
-      if (hostedDirective) {
-        state.messages.push({ role: 'system', content: hostedDirective });
+
+      let allow = [];
+
+      if (stage3UserImpliesAllGuests(text)) {
+        allow = [...activeGuests];
+      } else if (br === 'A' && Array.isArray(fc.namedKeys) && fc.namedKeys.length > 0) {
+        allow = [...fc.namedKeys];
+      } else {
+        const ex = extractMentionedSelectedCelebrities(text);
+        if (ex.length >= 1 && stage3UserExplicitlyDirectsNamedGuests(text, ex)) {
+          allow = ex.slice(0, 8);
+        } else {
+          allow = await inferStage3ResponderKeysFromUserMessage(text);
+        }
+      }
+
+      allow = [...new Set(allow)].filter(k => activeGuests.includes(k));
+      if (allow.length === 0 && activeGuests.length > 0) {
+        allow = heuristicPickStage3Responders(text, activeGuests);
+      }
+      state.stage3GuestAllowlistKeys = allow.length > 0 ? allow : null;
+
+      const exCheck = extractMentionedSelectedCelebrities(text);
+      const userExplicitDirected =
+        !stage3UserImpliesAllGuests(text) &&
+        exCheck.length >= 1 &&
+        stage3UserExplicitlyDirectsNamedGuests(text, exCheck);
+      const userNamedInFlowchart = br === 'A' && Array.isArray(fc.namedKeys) && fc.namedKeys.length > 0;
+      const userExplicitForA =
+        userNamedInFlowchart || (userExplicitDirected && allow.some(k => exCheck.includes(k)));
+
+      if (br === 'A') {
+        state.messages.push({ role: 'system', content: buildFlowchartMsgA(allow, { userExplicit: userExplicitForA }) });
+      } else if (br === 'B') {
+        state.messages.push({ role: 'system', content: FLOWCHART_MSG.B });
+        state.messages.push({ role: 'system', content: buildStage3AllowlistHardNotice(allow) });
+      } else if (br === 'C') {
+        state.messages.push({ role: 'system', content: FLOWCHART_MSG.C });
+        state.messages.push({ role: 'system', content: buildStage3AllowlistHardNotice(allow) });
+      } else {
+        state.messages.push({ role: 'system', content: FLOWCHART_MSG.U });
+        state.messages.push({ role: 'system', content: buildStage3AllowlistHardNotice(allow) });
       }
     }
   }
@@ -1631,7 +2126,6 @@ async function handleSend() {
     markHostedMeetingStarted();
     addSystemNotice('已确认嘉宾名单，会议正式开始');
   }
-
 
   // 无主持人模式：识别用户点名对象，给模型明确发言约束
   const manualDirective = buildManualTargetDirective(text);
@@ -1657,12 +2151,10 @@ async function handleSend() {
   if (typeof generateTimeContext === 'function') {
     contextPromises.push(withTimeout(generateTimeContext(text), 900));
   }
-  // 嘉宾时效补充仅在“会议进行中”触发，会前不阻塞主持人推荐速度
   if (
     typeof generateCelebrityTimeContext === 'function'
     && state.selectedCelebrities.length > 0
-    && state.selectionMode === 'auto'
-    && state.meetingStarted
+    && (state.meetingStarted || state.selectionMode === 'manual')
     && typeof needsRecentInfo === 'function'
     && needsRecentInfo(text)
   ) {
@@ -1681,6 +2173,40 @@ async function handleSend() {
   }
 
   await generateResponse();
+}
+
+// ========== 发送消息 ==========
+async function handleSend() {
+  const text = messageInput.value.trim();
+  if (!text || state.isGenerating || state.isPaused) return;
+
+  if (state.shareViewMode) {
+    showToast('当前为好友分享的对话，请先点击「开启我的圆桌」');
+    return;
+  }
+
+  messageInput.value = '';
+  autoResizeTextarea();
+  sendBtn.disabled = true;
+
+  // 会后且用户要「新会议 / 另开一场」：先归档上一场、换 session、清空对话，再单独走会前推荐
+  if (state.selectionMode === 'auto' && state.meetingEnded && isWantsNewMeetingAfterEnd(text)) {
+    await beginNewMeetingFromEndedSession(text);
+    return;
+  }
+
+  addUserMessage(text);
+  state.messages.push({ role: 'user', content: text });
+  state.autoContinueRetries = 0;
+  state.autoContinueDepth = 0;
+  state.consecutiveUserInvitePending = 0;
+  state.s3BridgeFromGuestInFlight = false;
+  state.suppressHostedRoundBumpAfterThisTurn = false;
+  hostFlowResetLock();
+  state.recentHostUtterances = [];
+  state.stage3UnscopedCatchupUsed = false;
+
+  await processUserTurnAfterCommit(text);
 }
 
 // ========== 添加用户消息 ==========
@@ -1710,11 +2236,15 @@ const FENGLING_AVATAR = '<img src="fengling-avatar.png" style="width:100%;height
 
 // ========== 添加说话人消息（参会人员/风玲） ==========
 function addSpeakerMessage(speakerName, content, celebrityKey) {
-  const msgDiv = document.createElement('div');
-  msgDiv.className = 'message assistant';
-
   const info = getCelebrityInfo(speakerName, celebrityKey);
   const isFengling = (speakerName === '风玲' || celebrityKey === 'fengling');
+  if (isFengling && shouldSuppressDuplicateFenglingBubble(String(content || ''))) {
+    console.warn('[去重] 与上一条风玲气泡内容重复，跳过追加');
+    return null;
+  }
+
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'message assistant';
   const avatarContent = isFengling ? FENGLING_AVATAR : speakerName.charAt(0);
 
   msgDiv.innerHTML = `
@@ -1792,7 +2322,8 @@ function addSpeakerMessage(speakerName, content, celebrityKey) {
 }
 
 // ========== 创建空的说话人消息（用于流式填充） ==========
-function createStreamMessage(speakerName, celebrityKey) {
+// insertAfterEl：若提供，则插在该节点之后，避免仅 append 导致顺序错乱或整段重建闪屏
+function createStreamMessage(speakerName, celebrityKey, insertAfterEl = null) {
   const msgDiv = document.createElement('div');
   msgDiv.className = 'message assistant';
 
@@ -1822,7 +2353,15 @@ function createStreamMessage(speakerName, celebrityKey) {
       </div>
     </div>
   `;
-  chatArea.appendChild(msgDiv);
+  if (insertAfterEl && insertAfterEl.parentNode === chatArea) {
+    if (insertAfterEl.nextSibling) {
+      chatArea.insertBefore(msgDiv, insertAfterEl.nextSibling);
+    } else {
+      chatArea.appendChild(msgDiv);
+    }
+  } else {
+    chatArea.appendChild(msgDiv);
+  }
   scrollToBottom();
   
   // 绑定语音按钮事件（初始为禁用状态，等待内容填充后启用）
@@ -1939,29 +2478,38 @@ function addTypingIndicator() {
 async function generateResponse() {
   state.isGenerating = true;
   state.abortController = new AbortController();
+  const wasSummaryTurn = state.summaryReady === true;
   sendBtn.style.display = 'none';
   stopBtn.style.display = '';
 
   let typingMsg = null;
 
   try {
+    // 新一次生成前清空流式 DOM，避免上一条的 streamMsgElements 在「自动续写」下一条里被
+    // reconcile 误当成首段：会把首条从【风玲】morph 成下一位【嘉宾】，出现「风玲说一句话就消失」。
+    clearStreamMessages();
+    streamTypingMsg = null;
+
     typingMsg = addTypingIndicator();
+
+    const lastUserQ = (typeof getLastUserQuestion === 'function' && getLastUserQuestion()) || '';
+    const preMeetingDirectTopic =
+      state.selectionMode === 'auto' &&
+      !state.meetingStarted &&
+      lastUserQ.trim().length > 0 &&
+      !isPreMeetingChitChat(lastUserQ);
 
     const systemPrompt = buildSystemPrompt(state.selectedCelebrities, {
       selectionMode: state.selectionMode,
-      meetingFlowMode: state.meetingFlowMode,
       meetingStarted: state.meetingStarted,
       meetingEnded: state.meetingEnded,
       allowExternalCelebrities: state.allowExternalCelebrities,
       pendingExternalApproval: state.pendingExternalApproval,
+      pendingInviteCelebrityVerify: state.pendingInviteCelebrityVerify,
       hostedRound: state.hostedRound,
-      hostedStage: state.hostedStage,
-      round1CompletedKeys: state.round1CompletedKeys,
-      round2CompletedKeys: state.round2CompletedKeys,
-      awaitingUserPerspective: state.awaitingUserPerspective,
       awaitingEndConfirmation: state.awaitingEndConfirmation,
       summaryReady: state.summaryReady,
-      userParticipationCount: state.userParticipationCount,
+      preMeetingDirectTopic,
     });
     
     const apiMessages = [
@@ -1980,6 +2528,15 @@ async function generateResponse() {
         messages: apiMessages,
         temperature: CONFIG.temperature,
         stream: true,
+        max_tokens:
+          state.selectionMode === 'auto' &&
+          state.meetingStarted &&
+          state.summaryReady &&
+          typeof CONFIG.summaryMaxTokens === 'number'
+            ? CONFIG.summaryMaxTokens
+            : typeof CONFIG.max_tokens === 'number'
+              ? CONFIG.max_tokens
+              : 8192,
       }),
       signal: state.abortController.signal,
     });
@@ -2040,37 +2597,44 @@ async function generateResponse() {
         // 确保打字指示器已移除
         removeStreamTyping();
 
-        // 过滤风玲的重复自我介绍
+        // 与流式用同一套「展示用」清洗后再落盘，避免流式/终稿 parse 条数不一致 → tryReuse 失败 → 清空 DOM 后风玲不渲染
         const messageIndex = state.messages.filter(m => m.role === 'assistant').length;
-        fullContent = filterFenglingSelfIntro(fullContent, messageIndex);
-        fullContent = beautifyHostContent(fullContent);
+        const rawForFinalize = String(fullContent || '');
+        const displayText = beautifyHostContent(filterFenglingSelfIntro(rawForFinalize, messageIndex));
 
-        const isOneOnOne = state.selectedCelebrities.length === 1;
-        const parsedForFinal = parseMultiSpeaker(fullContent, isOneOnOne);
-
-        // 保护：若流式阶段已拆出多发言，但最终解析失败，则保留流式展示，避免“内容突然消失/合并”
-        const keepStreamRender = parsedForFinal.length === 0 && streamParsedMode && streamMsgElements.length > 0;
-
-        if (!keepStreamRender) {
-          // 清除流式渲染的临时消息，重新完整渲染
+        const reusedStream =
+          tryReuseStreamAsFinal(displayText) || tryReuseStreamAsFinal(rawForFinalize);
+        if (!reusedStream) {
           clearStreamMessages();
-          renderFinalContent(fullContent);
-        } else {
-          // 保留流式内容，仅确保最后一条也显示操作按钮
-          const lastMsg = streamMsgElements[streamMsgElements.length - 1];
-          const actionsDiv = lastMsg?.querySelector('.message-actions');
-          if (actionsDiv) actionsDiv.classList.add('show');
+          renderFinalContent(displayText);
         }
+        collapseAdjacentDuplicateFenglingBubbles();
 
-        const contentForHistory = cleanAssistantContentForHistory(stripNonHostForSummary(fullContent));
-        // 若清洗后为空（整段都是复读/伪造用户回复），不写历史，避免污染下一轮上下文
-        if (contentForHistory && contentForHistory.trim()) {
-          state.messages.push({ role: 'assistant', content: contentForHistory });
+        const verbatimAssistant = displayText.trim();
+        if (verbatimAssistant) {
+          if (!isAssistantContentDuplicateOfLastForHistory(verbatimAssistant)) {
+            state.messages.push({ role: 'assistant', content: verbatimAssistant });
+          } else {
+            console.warn('[历史] 本条助手内容与上条重复，跳过写入 state.messages');
+          }
         } else {
-          console.log('[历史] 整段被识别为复读/伪造用户回复，跳过写入历史');
+          console.log('[历史] 本段无有效内容，未写入 state.messages');
         }
-      recordHostedAssistantTurn(fullContent);
-
+        if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) {
+          await tryMarkHostAskedUserForEnd(displayText);
+        }
+        const chainContinued = (await checkAndContinueGeneration(displayText)) === true;
+        if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) {
+          if (!chainContinued && !state.suppressHostedRoundBumpAfterThisTurn) {
+            state.hostedRound = Math.min(3, state.hostedRound + 1);
+          }
+          state.suppressHostedRoundBumpAfterThisTurn = false;
+          if (wasSummaryTurn) {
+            state.meetingEnded = true;
+            state.awaitingEndConfirmation = false;
+            state.summaryReady = false;
+          }
+        }
       // 上报
       // 获取当前选择的参会人员显示名称
       const currentCelebrities = state.selectedCelebrities
@@ -2078,13 +2642,10 @@ async function generateResponse() {
         .map(key => CELEBRITIES[key]?.displayName)
         .filter(name => name);
       
-      if (typeof logMessage === 'function') logMessage('assistant', 'assistant', fullContent, currentCelebrities);
+      if (typeof logMessage === 'function') logMessage('assistant', 'assistant', displayText, currentCelebrities);
 
       // 检查AI推荐参会人员并自动添加
-      checkAndApplyRecommendations(fullContent);
-      
-      // 检查是否需要继续生成（风玲引导了但没有嘉宾回应）
-      await checkAndContinueGeneration(fullContent);
+      checkAndApplyRecommendations(displayText);
     }
 
   } catch (error) {
@@ -2092,33 +2653,43 @@ async function generateResponse() {
     if (error.name === 'AbortError') {
       // 用户打断：保留已渲染的流式内容作为最终内容
       if (streamFullContent) {
-        // 过滤风玲的重复自我介绍
         const messageIndex = state.messages.filter(m => m.role === 'assistant').length;
-        streamFullContent = filterFenglingSelfIntro(streamFullContent, messageIndex);
-        streamFullContent = beautifyHostContent(streamFullContent);
+        const displaySnap = beautifyHostContent(filterFenglingSelfIntro(streamFullContent, messageIndex));
 
-        const isOneOnOne = state.selectedCelebrities.length === 1;
-        const parsedForFinal = parseMultiSpeaker(streamFullContent, isOneOnOne);
-        const keepStreamRender = parsedForFinal.length === 0 && streamParsedMode && streamMsgElements.length > 0;
-
-        if (!keepStreamRender) {
+        const reusedAbort =
+          tryReuseStreamAsFinal(displaySnap);
+        if (!reusedAbort) {
           clearStreamMessages();
-          renderFinalContent(streamFullContent);
-        } else {
-          const lastMsg = streamMsgElements[streamMsgElements.length - 1];
-          const actionsDiv = lastMsg?.querySelector('.message-actions');
-          if (actionsDiv) actionsDiv.classList.add('show');
+          renderFinalContent(displaySnap);
         }
+        collapseAdjacentDuplicateFenglingBubbles();
 
-        const streamContentForHistory = cleanAssistantContentForHistory(stripNonHostForSummary(streamFullContent));
-        if (streamContentForHistory && streamContentForHistory.trim()) {
-          state.messages.push({ role: 'assistant', content: streamContentForHistory });
+        const verbatimAbort = displaySnap.trim();
+        if (verbatimAbort) {
+          if (!isAssistantContentDuplicateOfLastForHistory(verbatimAbort)) {
+            state.messages.push({ role: 'assistant', content: verbatimAbort });
+          } else {
+            console.warn('[历史] 中断快照与上条助手重复，跳过写入 state.messages');
+          }
         } else {
-          console.log('[历史] 中断快照被识别为复读/伪造用户回复，跳过写入历史');
+          console.log('[历史] 中断快照无有效内容，未写入 state.messages');
         }
-        recordHostedAssistantTurn(streamFullContent);
-        checkAndApplyRecommendations(streamFullContent);
-        await checkAndContinueGeneration(streamFullContent);
+        if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) {
+          await tryMarkHostAskedUserForEnd(displaySnap);
+        }
+        const chainContinued = (await checkAndContinueGeneration(displaySnap)) === true;
+        if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) {
+          if (!chainContinued && !state.suppressHostedRoundBumpAfterThisTurn) {
+            state.hostedRound = Math.min(3, state.hostedRound + 1);
+          }
+          state.suppressHostedRoundBumpAfterThisTurn = false;
+          if (wasSummaryTurn) {
+            state.meetingEnded = true;
+            state.awaitingEndConfirmation = false;
+            state.summaryReady = false;
+          }
+        }
+        checkAndApplyRecommendations(displaySnap);
       } else {
         // 有时打断发生在流式早期，streamFullContent 还没写入；此时从可见流式DOM回收文本，避免“内容消失”
         const snapshotContent = collectVisibleStreamAssistantContent();
@@ -2126,7 +2697,11 @@ async function generateResponse() {
           const lastMsg = streamMsgElements[streamMsgElements.length - 1];
           const actionsDiv = lastMsg?.querySelector('.message-actions');
           if (actionsDiv) actionsDiv.classList.add('show');
-          state.messages.push({ role: 'assistant', content: snapshotContent });
+          if (!isAssistantContentDuplicateOfLastForHistory(snapshotContent)) {
+            state.messages.push({ role: 'assistant', content: snapshotContent });
+          } else {
+            console.warn('[历史] 可见流快照与上条助手重复，跳过写入 state.messages');
+          }
           checkAndApplyRecommendations(snapshotContent);
         } else {
           if (typingMsg) typingMsg.remove();
@@ -2192,9 +2767,171 @@ function collectVisibleStreamAssistantContent() {
   return blocks.join('\n\n').trim();
 }
 
+function buildHostedParsedSegments(content, isOneOnOne) {
+  // 总结轮：先把全文压成仅【风玲】可用正文，再解析，从根上防止模型仍以【嘉宾名】输出
+  if (state.selectionMode === 'auto' && state.meetingStarted && state.summaryReady) {
+    const forcedText = stripNonHostForSummary(String(content || ''));
+    let raw = parseMultiSpeaker(forcedText, isOneOnOne).filter(
+      seg => seg.key === 'fengling' || !isHostDirectiveText(seg.text)
+    );
+    const firstFengIdx0 = raw.findIndex(s => s && s.key === 'fengling');
+    const afterEcho = raw.filter((seg, idx) => {
+      if (seg.key !== 'fengling') return true;
+      if (firstFengIdx0 >= 0 && idx === firstFengIdx0) return true;
+      if (looksLikeFakeUserReplyEcho(seg.text)) return false;
+      return true;
+    });
+    let deduped = dedupeSpeakerSegments(afterEcho);
+    const fengOnly = deduped.filter(s => s && s.key === 'fengling');
+    if (fengOnly.length > 1) {
+      deduped = [
+        {
+          speaker: '风玲',
+          key: 'fengling',
+          text: fengOnly
+            .map(s => String(s.text || '').trim())
+            .filter(Boolean)
+            .join('\n\n')
+        }
+      ];
+    }
+    return deduped;
+  }
+
+  let raw = parseMultiSpeaker(content, isOneOnOne)
+    .filter(seg => seg.key === 'fengling' || !isHostDirectiveText(seg.text));
+  const firstFengIdx0 = raw.findIndex(s => s && s.key === 'fengling');
+  const afterEcho = raw.filter((seg, idx) => {
+    if (state.selectionMode !== 'auto' || !state.meetingStarted) return true;
+    if (seg.key !== 'fengling') return true;
+    if (firstFengIdx0 >= 0 && idx === firstFengIdx0) return true; // 本条首段风玲不剥，防与流式条数不一 → tryReuse 失败 → 风玲行 morph 成嘉宾/消失
+    if (looksLikeFakeUserReplyEcho(seg.text)) {
+      console.log('[拦截] 风玲段疑似自答用户回复，丢弃：', seg.text.slice(0, 30));
+      return false;
+    }
+    return true;
+  });
+  const authorized = filterAuthorizedSpeakers(afterEcho, content);
+  const firstFengIdx1 = authorized.findIndex(s => s && s.key === 'fengling');
+  const noFakeRecap = filterFakeGuestRecap(authorized, firstFengIdx1);
+  const noRepeating = filterRepeatingHostSegments(noFakeRecap);
+  return dedupeSpeakerSegments(noRepeating);
+}
+
+// 同一段 DOM 在流式中说话人 key 因解析修正而变化时，原地更新抬头/头像，避免删节点闪屏
+function morphStreamMessageElement(msgDiv, seg) {
+  const name = seg.speaker;
+  const key = seg.key;
+  msgDiv.dataset.speakerKey = key;
+  const info = getCelebrityInfo(name, key);
+  const isFengling = key === 'fengling';
+  const avatarEl = msgDiv.querySelector('.message-avatar');
+  const nameEl = msgDiv.querySelector('.message-name');
+  if (nameEl) {
+    nameEl.textContent = name;
+    nameEl.style.color = info.color;
+  }
+  if (avatarEl) {
+    avatarEl.style.background = isFengling ? 'transparent' : info.color;
+    avatarEl.innerHTML = isFengling ? FENGLING_AVATAR : name.charAt(0);
+  }
+  const voiceBtn = msgDiv.querySelector('.msg-voice-btn');
+  if (voiceBtn) {
+    voiceBtn.setAttribute('data-speaker', name);
+  }
+}
+
+function reconcileStreamDom(parsed) {
+  for (let i = 0; i < parsed.length; i++) {
+    const seg = parsed[i];
+    if (i < streamMsgElements.length) {
+      const el = streamMsgElements[i];
+      if (!el) continue;
+      if ((el.dataset.speakerKey || '') !== seg.key) {
+        morphStreamMessageElement(el, seg);
+      }
+    } else {
+      const insertAfter = streamMsgElements[i - 1] || null;
+      const el = createStreamMessage(seg.speaker, seg.key, insertAfter);
+      if (el && el.dataset) el.dataset.speakerKey = seg.key;
+      streamMsgElements.push(el);
+    }
+  }
+  while (streamMsgElements.length > parsed.length) {
+    const rem = streamMsgElements.pop();
+    if (rem) rem.remove();
+  }
+}
+
+// 流式结束若 DOM 行数/说话人 key 与最终解析一致，仅更新气泡，避免 clear 再 add 的闪断
+function tryReuseStreamAsFinal(fullContent) {
+  if (streamMsgElements.length === 0) return false;
+  const isOneOnOne = state.selectedCelebrities.length === 1;
+  if (state.selectionMode === 'auto' && !state.meetingStarted) return false;
+  const parsed = buildHostedParsedSegments(fullContent, isOneOnOne);
+  if (parsed.length === 0 || parsed.length !== streamMsgElements.length) return false;
+  for (let i = 0; i < parsed.length; i++) {
+    if ((streamMsgElements[i].dataset.speakerKey || '') !== parsed[i].key) return false;
+  }
+  for (let i = 0; i < parsed.length; i++) {
+    const bubble = streamMsgElements[i].querySelector('.message-bubble');
+    if (bubble) {
+      bubble.innerHTML = formatMessageContent(parsed[i].text.trim());
+    }
+    const actionsDiv = streamMsgElements[i].querySelector('.message-actions');
+    if (actionsDiv) actionsDiv.classList.add('show');
+  }
+  recordHostUtterances(parsed);
+  streamMsgElements = [];
+  streamParsedMode = false;
+  removeStreamTyping();
+  return true;
+}
+
+/**
+ * 流式中途：DOM 首行已是【风玲】，解析却把垫话并进首条【嘉宾】→ reconcile 会 morph 首行成嘉宾、头像闪变。
+ * 若嘉宾正文仍以当前风玲气泡纯文本为前缀，拆回 [风玲, 嘉宾]，保持首行 dataset 稳定。
+ */
+function stabilizeStreamFirstSpeakerRow(parsed) {
+  if (!streamParsedMode || !Array.isArray(parsed) || parsed.length === 0) return parsed;
+  if (!streamMsgElements.length) return parsed;
+  const el0 = streamMsgElements[0];
+  if (!el0 || (el0.dataset.speakerKey || '') !== 'fengling') return parsed;
+  const p0 = parsed[0];
+  if (!p0 || p0.key === 'fengling') return parsed;
+  const bubble = el0.querySelector('.message-bubble');
+  const domText = (bubble && (bubble.textContent || '').trim()) || '';
+  const segText = String(p0.text || '').trim();
+  if (domText.length < 2 || !segText) return parsed;
+  if (!segText.startsWith(domText)) return parsed;
+  const rest = segText.slice(domText.length).trim();
+  if (!rest) {
+    return [{ speaker: '风玲', key: 'fengling', text: domText }, ...parsed.slice(1)];
+  }
+  return [
+    { speaker: '风玲', key: 'fengling', text: domText },
+    { ...p0, text: rest },
+    ...parsed.slice(1),
+  ];
+}
+
 function renderStreamContent(fullContent) {
-  // 主持人模式会前推荐阶段：不做多角色拆分，避免名单推荐被误拆成嘉宾发言
+  // 主持人模式会前：不拆多角色，但用单条【风玲】流式气泡展示，避免只转圈/空白像「出 bug」
   if (state.selectionMode === 'auto' && !state.meetingStarted) {
+    const text = String(fullContent || '').replace(/【[^】]*$/, '');
+    removeStreamTyping();
+    if (streamMsgElements.length === 0) {
+      const el = createStreamMessage('风玲', 'fengling', null);
+      if (el && el.dataset) el.dataset.speakerKey = 'fengling';
+      streamMsgElements = [el];
+    }
+    const bubble = streamMsgElements[0]?.querySelector?.('.message-bubble');
+    if (bubble) {
+      bubble.innerHTML = text.trim() ? formatMessageContent(text) : '';
+    }
+    const actions = streamMsgElements[0]?.querySelector?.('.message-actions');
+    if (actions) actions.classList.remove('show');
+    scrollToBottom();
     return;
   }
 
@@ -2204,20 +2941,8 @@ function renderStreamContent(fullContent) {
   // 去掉末尾尚未闭合的 【xxx 片段，避免显示原始标记
   const cleanContent = fullContent.replace(/【[^】]*$/, '');
 
-  const rawParsed = parseMultiSpeaker(cleanContent, isOneOnOne)
-    .filter(seg => seg.key === 'fengling' || !isHostDirectiveText(seg.text))
-    .filter(seg => {
-      if (state.selectionMode !== 'auto' || !state.meetingStarted) return true;
-      if (seg.key !== 'fengling') return true;
-      if (looksLikeFakeUserReplyEcho(seg.text)) {
-        return false;
-      }
-      return true;
-    });
-  const authorized = filterAuthorizedSpeakers(rawParsed, cleanContent);
-  const noFakeRecap = filterFakeGuestRecap(authorized);
-  const noRepeating = filterRepeatingHostSegments(noFakeRecap);
-  const parsed = dedupeSpeakerSegments(noRepeating);
+  let parsed = buildHostedParsedSegments(cleanContent, isOneOnOne);
+  parsed = stabilizeStreamFirstSpeakerRow(parsed);
 
   if (parsed.length === 0) {
     return;
@@ -2235,35 +2960,15 @@ function renderStreamContent(fullContent) {
     addAllParticipantsAtOnce(fullContent);
   }
 
-  // 检查 DOM 元素与过滤后段落的 key 是否对齐：如果不对齐（如从"含嘉宾"切换到"仅风玲"），全部重建
-  // 对旧元素（没有 speakerKey）先补齐，避免误判
+  // 对旧元素（没有 speakerKey）先补齐
   streamMsgElements.forEach((el, i) => {
     const seg = parsed[i];
     if (el && el.dataset && !el.dataset.speakerKey && seg) {
       el.dataset.speakerKey = seg.key;
     }
   });
-  const needRebuild = streamMsgElements.some((el, i) => {
-    const seg = parsed[i];
-    if (!seg) return false;
-    return el.dataset && el.dataset.speakerKey && el.dataset.speakerKey !== seg.key;
-  });
-  if (needRebuild) {
-    streamMsgElements.forEach(el => el.remove());
-    streamMsgElements = [];
-  }
-
-  // 确保 DOM 元素数量与段数一致（可能因过滤变严格而需要收缩）
-  while (streamMsgElements.length > parsed.length) {
-    const extra = streamMsgElements.pop();
-    if (extra && extra.remove) extra.remove();
-  }
-  while (streamMsgElements.length < parsed.length) {
-    const seg = parsed[streamMsgElements.length];
-    const el = createStreamMessage(seg.speaker, seg.key);
-    if (el && el.dataset) el.dataset.speakerKey = seg.key;
-    streamMsgElements.push(el);
-  }
+  // 与「全删重建」不同：从首个错位处起原地 morph / 在末尾补节点 / 从末尾删多余，避免风玲行整段消失
+  reconcileStreamDom(parsed);
 
   // 更新每个段的文本
   for (let i = 0; i < parsed.length; i++) {
@@ -2342,19 +3047,22 @@ function filterFenglingInOneOnOne(content) {
 // 只要处在主持人模式的正式会议阶段，并且：
 //   1) 用户已确认结束（summaryReady），或
 //   2) 整段内容被识别为总结结构（含 总结/报告 + 核心观点 + 共识/分歧），或
-//   3) 流式早期即出现明显总结关键词（如"会议总结/总结报告/核心观点/本场洞见/共识分歧"等）
+//   3) 流式/局部出现**强**总结语（如「会议总结报告」「本场新组合洞见」等）
 // 就认为当前回复属于总结，需要强制只保留风玲段落。
+// 注意：不得单独用「核心观点」「共识与分歧」等**讨论中高频词**作判断——
+// 否则会把首轮长回复误判为总结，`stripNonHostForSummary` 会剥掉所有嘉宾、写入历史的上下文丢失，界面经 `filterAuthorizedSpeakers` 也会只剩风玲，表现为「大家说完后信息没了」。
 function isSummaryPhaseContent(rawContent) {
   if (state.selectionMode !== 'auto' || !state.meetingStarted) return false;
+  // 须先于 meetingEnded：用户已确认总结时本条必按「仅风玲」处理；避免与 meetingEnded 的时序交错导致误判为非总结、嘉宾段透出
   if (state.summaryReady) return true;
+  // 总结已出、会议已结束态下用户再发话时，新回复不得按「总结段」剥嘉宾
+  if (state.meetingEnded) return false;
   if (typeof rawContent !== 'string' || !rawContent) return false;
   if (detectMeetingSummary(rawContent)) return true;
-  // 早期流式关键词识别（任何一个命中即认为进入总结模式）
+  // 只保留在真实总结里常见、在首轮/自由讨论中极少单独出现的强信号
   const earlySummaryPatterns = [
     /会议总结报告/,
-    /【?风玲】?[^【]{0,60}?总结/,
-    /核心观点/,
-    /共识与?分歧/,
+    // 删「风玲+总结」行内匹配：阶段一/二风玲说「我简单总结一句」会误判，filterAuthorized 只留风玲会剥掉同条全部嘉宾，或引发终稿/流式条数与 DOM 首行 morph
     /本场新?组合洞见/,
     /本次会议[的]?新见解/,
   ];
@@ -2364,6 +3072,21 @@ function isSummaryPhaseContent(rawContent) {
 // ========== 总结阶段：强制剥离嘉宾段落，仅保留风玲 ==========
 function stripNonHostForSummary(rawContent) {
   if (!isSummaryPhaseContent(rawContent)) return rawContent;
+
+  // 用户已点「确认总结」的专稿：模型若仍输出【庄子】【康德】等分节，旧逻辑只拼接「风玲」parse 段，
+  // 会把第一节【风玲】之后、误标为嘉宾块的大量正文**整体丢弃**，界面像「说到一半卡住」。
+  if (state.summaryReady) {
+    let t = String(rawContent || '').trim();
+    if (!t) return rawContent;
+    t = t.replace(/\r\n/g, '\n');
+    t = t.replace(/【[^】]+】/g, '');
+    t = t.replace(/[ \t]+\n/g, '\n');
+    t = t.replace(/\n{3,}/g, '\n\n');
+    const body = t.trim();
+    if (!body) return rawContent;
+    return `【风玲】${body}`;
+  }
+
   const isOneOnOne = state.selectedCelebrities.length === 1;
   const parsed = parseMultiSpeaker(rawContent, isOneOnOne);
   const fenglingSegs = parsed.filter(seg => seg.key === 'fengling');
@@ -2383,11 +3106,13 @@ function cleanAssistantContentForHistory(rawContent) {
   let parsed = parseMultiSpeaker(rawContent, isOneOnOne);
   if (parsed.length === 0) return rawContent;
 
-  // 主持人模式下：清掉"自答用户/自答嘉宾/复读上轮主持人发言"的段
+  // 主持人模式下：清掉"自答用户/自答嘉宾/复读上轮主持人发言"的段（本条**首段**【风玲】一律保留，防 morph/丢历史）
   if (state.selectionMode === 'auto' && state.meetingStarted) {
-    parsed = filterFakeGuestRecap(parsed);
-    parsed = parsed.filter(seg => {
+    const firstFeng0 = parsed.findIndex(s => s && s.key === 'fengling');
+    parsed = filterFakeGuestRecap(parsed, firstFeng0);
+    parsed = parsed.filter((seg, idx) => {
       if (seg.key !== 'fengling') return true;
+      if (firstFeng0 >= 0 && idx === firstFeng0) return true;
       if (looksLikeFakeUserReplyEcho(seg.text)) return false;
       const norm = normalizeSegText(seg.text);
       if (isTextRepeatingRecentHost(norm)) return false;
@@ -2400,10 +3125,33 @@ function cleanAssistantContentForHistory(rawContent) {
   return deduped.map(seg => `【${seg.speaker}】${seg.text.trim()}`).join('\n\n');
 }
 
+/** 写入 state.messages 与本地历史归档：助手侧存展示稿（与界面一致）；下游 API 由 getRecentMessages → pickAssistantMessageForApiHistory 再清洗 */
+function pickAssistantMessageForApiHistory(displayText) {
+  const base = String(displayText || '');
+  if (!base.trim()) return '';
+  const stripped = cleanAssistantContentForHistory(stripNonHostForSummary(base));
+  if (stripped && stripped.trim()) return stripped;
+  return base.trim();
+}
+
 // ========== 主持人模式嘉宾准入过滤 ==========
 // rawContentForCheck: 可选，用于基于内容识别是否进入总结阶段
 function filterAuthorizedSpeakers(parsed, rawContentForCheck) {
   if (state.selectionMode !== 'auto' || !state.meetingStarted) return parsed;
+  // 硬门：总结轮仅允许风玲段，不依赖流式片段是否已长得像总结（避免前半段仍带【嘉宾】）
+  if (state.summaryReady) {
+    return parsed.filter(seg => seg && seg.key === 'fengling');
+  }
+  // 会后自由对答：用户可点名库内任意嘉宾；不能只允许「本场初始 selected 名单」，否则【庄子】等会被剥掉，整条被当成风玲展示
+  if (state.meetingEnded) {
+    const allowLib = new Set(state.selectedCelebrities);
+    allowLib.add('fengling');
+    for (const k of Object.keys(CELEBRITIES)) {
+      if (String(k).startsWith('dynamic-')) continue;
+      allowLib.add(k);
+    }
+    return parsed.filter(seg => seg && seg.key && allowLib.has(seg.key));
+  }
   // 总结阶段：强制只保留风玲发言（基于 state 或基于内容识别）
   const contentForCheck = rawContentForCheck ?? parsed.map(p => `【${p.speaker}】${p.text}`).join('\n');
   if (isSummaryPhaseContent(contentForCheck)) {
@@ -2411,7 +3159,14 @@ function filterAuthorizedSpeakers(parsed, rawContentForCheck) {
   }
   const allowed = new Set(state.selectedCelebrities);
   allowed.add('fengling');
-  return parsed.filter(seg => allowed.has(seg.key));
+  let out = parsed.filter(seg => allowed.has(seg.key));
+  const nextSeg = getHostNextSegment();
+  const allow = state.stage3GuestAllowlistKeys;
+  if (!state.meetingEnded && nextSeg === 3 && Array.isArray(allow) && allow.length > 0) {
+    const allowSet = new Set(allow);
+    out = out.filter(seg => seg.key === 'fengling' || allowSet.has(seg.key));
+  }
+  return out;
 }
 
 // ========== 段落去重：LLM 在续写时可能复述前面风玲/嘉宾的话，导致同一段被渲染两次 ==========
@@ -2421,6 +3176,104 @@ function normalizeSegText(text) {
     .replace(/\s+/g, '')          // 去所有空白
     .replace(/[，,。.！!？?；;：:、""''""]/g, '') // 去常见标点
     .trim();
+}
+
+/** 最长公共子串长度（用于识别「落在/踩在」等改写导致的语义复读） */
+function longestCommonSubstringLength(s, t) {
+  if (!s || !t) return 0;
+  const n = s.length;
+  const m = t.length;
+  let best = 0;
+  let prev = new Array(m + 1).fill(0);
+  for (let i = 1; i <= n; i++) {
+    const cur = new Array(m + 1).fill(0);
+    const sc = s.charCodeAt(i - 1);
+    for (let j = 1; j <= m; j++) {
+      if (sc === t.charCodeAt(j - 1)) {
+        cur[j] = prev[j - 1] + 1;
+        if (cur[j] > best) best = cur[j];
+      }
+    }
+    prev = cur;
+  }
+  return best;
+}
+
+/**
+ * 已规范化的主持人文本是否视为同一段（同条或跨条复读）
+ * 在相同/包含判断之外，用 LCS/最短串比例兜住「少量用词替换」的重复引导。
+ */
+function hostNormalizedTextsNearDuplicate(na, nb) {
+  if (!na || !nb) return false;
+  if (na.length < 24 || nb.length < 24) return false;
+  if (na === nb) return true;
+  if (na.length >= 20 && nb.length >= 20) {
+    if (na.startsWith(nb) || nb.startsWith(na)) return true;
+    if (na.includes(nb) || nb.includes(na)) return true;
+  }
+  const shorter = Math.min(na.length, nb.length);
+  const lcs = longestCommonSubstringLength(na, nb);
+  if (shorter >= 36 && lcs / shorter >= 0.45) return true;
+  if (lcs >= 52) return true;
+  return false;
+}
+
+// 两条已渲染的风玲气泡是否视为同一句（链式续写 / 模型复述会产出相邻重复 DOM）
+function hostBubblesAreNearDuplicate(prevPlain, nextPlain) {
+  return hostNormalizedTextsNearDuplicate(
+    normalizeSegText(prevPlain),
+    normalizeSegText(nextPlain)
+  );
+}
+
+function getLastFenglingBubblePlainFromDom() {
+  const nodes = Array.from(chatArea.querySelectorAll('.message.assistant')).reverse();
+  for (const row of nodes) {
+    const name = row.querySelector('.message-name')?.textContent?.trim();
+    if (name === '风玲') {
+      return row.querySelector('.message-bubble')?.textContent || '';
+    }
+  }
+  return '';
+}
+
+function shouldSuppressDuplicateFenglingBubble(newPlain) {
+  if (state.importingSharePayload) return false;
+  if (state.selectionMode !== 'auto') return false;
+  const prev = getLastFenglingBubblePlainFromDom();
+  if (!prev) return false;
+  return hostBubblesAreNearDuplicate(prev, String(newPlain || ''));
+}
+
+// 流式 finalize / 续写后：去掉紧贴在一起、内容相同的两条风玲（保留第一条）
+function collapseAdjacentDuplicateFenglingBubbles() {
+  if (state.selectionMode !== 'auto') return;
+  const rows = Array.from(chatArea.querySelectorAll('.message.assistant'));
+  let i = 0;
+  while (i < rows.length - 1) {
+    const cur = rows[i];
+    const nxt = rows[i + 1];
+    const n0 = cur.querySelector('.message-name')?.textContent?.trim();
+    const n1 = nxt.querySelector('.message-name')?.textContent?.trim();
+    if (n0 === '风玲' && n1 === '风玲') {
+      const t0 = cur.querySelector('.message-bubble')?.textContent || '';
+      const t1 = nxt.querySelector('.message-bubble')?.textContent || '';
+      if (hostBubblesAreNearDuplicate(t0, t1)) {
+        console.warn('[去重] 移除相邻重复的第二条风玲气泡');
+        nxt.remove();
+        rows.splice(i + 1, 1);
+        continue;
+      }
+    }
+    i++;
+  }
+}
+
+function isAssistantContentDuplicateOfLastForHistory(plain) {
+  const msgs = state.messages || [];
+  const lastAs = [...msgs].reverse().find(m => m && m.role === 'assistant');
+  if (!lastAs || plain == null) return false;
+  return hostBubblesAreNearDuplicate(lastAs.content, String(plain));
 }
 
 function dedupeSpeakerSegments(parsed) {
@@ -2437,6 +3290,7 @@ function dedupeSpeakerSegments(parsed) {
     const seenList = seenByKey.get(seg.key) || [];
     const isDup = seenList.some(prev => {
       if (prev === norm) return true;
+      if (seg.key === 'fengling' && hostNormalizedTextsNearDuplicate(prev, norm)) return true;
       if (norm.length >= 20 && prev.length >= 20) {
         if (prev.startsWith(norm) || norm.startsWith(prev)) return true;
         if (prev.includes(norm) || norm.includes(prev)) return true;
@@ -2460,14 +3314,7 @@ const HOST_HISTORY_MAX = 6;
 function isTextRepeatingRecentHost(textNorm) {
   if (!textNorm || textNorm.length < 12) return false;
   const list = state.recentHostUtterances || [];
-  return list.some(prev => {
-    if (prev === textNorm) return true;
-    if (prev.length >= 20 && textNorm.length >= 20) {
-      if (prev.startsWith(textNorm) || textNorm.startsWith(prev)) return true;
-      if (prev.includes(textNorm) || textNorm.includes(prev)) return true;
-    }
-    return false;
-  });
+  return list.some(prev => hostNormalizedTextsNearDuplicate(prev, textNorm));
 }
 
 function recordHostUtterances(parsed) {
@@ -2489,20 +3336,30 @@ function recordHostUtterances(parsed) {
 // 主持人模式下：拦截"自答嘉宾发言"的风玲段
 // 触发条件：当前段是风玲；且这段话以"刚才/几位/各位..."开头承接嘉宾；且历史+本次实际都没有嘉宾发言；
 // 或者：当前 parsed 里有连续多段风玲没有嘉宾夹隔，后续风玲段是基于"前面嘉宾说过"的承接假设
-function filterFakeGuestRecap(parsed) {
+// 可传入**本条**在 filterAuthorized 之后的第一段风玲下标，用于与「首条风玲永不剥」规则对齐；缺省时仍按 `parsed` 自算
+function filterFakeGuestRecap(parsed, firstFengInParsed = -1) {
   if (!Array.isArray(parsed) || parsed.length === 0) return parsed;
   if (state.selectionMode !== 'auto' || !state.meetingStarted) return parsed;
+  if (getHostNextSegment() === 3) return parsed;
+
+  const firstF = firstFengInParsed >= 0
+    ? firstFengInParsed
+    : parsed.findIndex(s => s && s.key === 'fengling');
 
   const result = [];
-  let hasGuestSoFar = hasAnyGuestSpokenRecently(null); // 历史里是否已有嘉宾发过言
+  let hasGuestSoFar = hasAnyGuestSpokenRecently(null);
 
-  for (const seg of parsed) {
+  for (let i = 0; i < parsed.length; i++) {
+    const seg = parsed[i];
     if (seg.key !== 'fengling') {
       result.push(seg);
       hasGuestSoFar = true;
       continue;
     }
-    // 是风玲段
+    if (i === firstF) {
+      result.push(seg);
+      continue;
+    }
     if (looksLikeHostFakingGuestSpeeches(seg.text) && !hasGuestSoFar) {
       console.log('[拦截] 风玲段疑似自答"嘉宾发言"（嘉宾实际尚未开口），丢弃：', seg.text.slice(0, 30));
       continue;
@@ -2513,14 +3370,17 @@ function filterFakeGuestRecap(parsed) {
 }
 
 // 在主持人模式下：丢弃"与最近主持人发言"重复的风玲段（跨条去重）
+// 注意：本助手回复中**出现的第一段【风玲】**不得丢弃，否则落盘与流式 DOM 条数不一致，会出现「主持人说完就消失」
 function filterRepeatingHostSegments(parsed) {
   if (!Array.isArray(parsed) || parsed.length === 0) return parsed;
   if (state.selectionMode !== 'auto' || !state.meetingStarted) return parsed;
+  const firstFengIdx = parsed.findIndex(seg => seg && seg.key === 'fengling');
   const result = [];
-  for (const seg of parsed) {
+  for (let i = 0; i < parsed.length; i++) {
+    const seg = parsed[i];
     if (seg.key === 'fengling') {
       const norm = normalizeSegText(seg.text);
-      if (isTextRepeatingRecentHost(norm)) {
+      if (i !== firstFengIdx && isTextRepeatingRecentHost(norm)) {
         console.log(`[跨条去重] 丢弃复读的主持人段：${seg.text.slice(0, 30)}...`);
         continue;
       }
@@ -2560,7 +3420,8 @@ function hasAnyGuestSpokenRecently(parsedCurrent) {
     if (parsedCurrent.some(seg => seg.key && seg.key !== 'fengling')) return true;
   }
   const msgs = state.messages || [];
-  for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 10; i--) {
+  // 只扫 10 条在「系统 user 连发/长会话」时易漏检：有嘉宾的助手条若不在窗内，会误把下一条风玲当「自答」剥掉，首段被解析成嘉宾 → DOM 把首行 morph 成嘉宾，表现为风玲「闪一下没了」
+  for (let i = msgs.length - 1; i >= 0 && i >= msgs.length - 40; i--) {
     const m = msgs[i];
     if (!m || m.role !== 'assistant' || !m.content) continue;
     // 解析出非"风玲"的发言标记即视为嘉宾已发言
@@ -2580,30 +3441,14 @@ function renderFinalContent(fullContent) {
   if (state.selectionMode === 'auto' && !state.meetingStarted) {
     const safeHostMessage = buildPreMeetingHostMessage(fullContent);
     addSpeakerMessage('风玲', safeHostMessage, 'fengling');
+    collapseAdjacentDuplicateFenglingBubbles();
     return;
   }
 
   // 如果只有1位参会人员，跳过第一个标记之前的所有内容（风玲的引导语）
   const isOneOnOne = state.selectedCelebrities.length === 1;
   
-  const rawParsed = parseMultiSpeaker(fullContent, isOneOnOne)
-    .filter(seg => seg.key === 'fengling' || !isHostDirectiveText(seg.text))
-    // 主持人模式下：拦截 LLM 自答用户角色（"您说得对/我明白了..."等承接语）
-    .filter(seg => {
-      if (state.selectionMode !== 'auto' || !state.meetingStarted) return true;
-      if (seg.key !== 'fengling') return true;
-      if (looksLikeFakeUserReplyEcho(seg.text)) {
-        console.log('[拦截] 风玲段疑似自答用户回复，丢弃：', seg.text.slice(0, 30));
-        return false;
-      }
-      return true;
-    });
-  const authorized = filterAuthorizedSpeakers(rawParsed, fullContent);
-  // 拦截风玲"自答嘉宾发言"：嘉宾根本还没说话，风玲却说"刚才几位..."
-  const noFakeRecap = filterFakeGuestRecap(authorized);
-  // 跨条复读检测（主持人段）
-  const noRepeating = filterRepeatingHostSegments(noFakeRecap);
-  const parsed = dedupeSpeakerSegments(noRepeating);
+  const parsed = buildHostedParsedSegments(fullContent, isOneOnOne);
   recordHostUtterances(parsed);
 
   if (parsed.length === 0) {
@@ -2611,6 +3456,7 @@ function renderFinalContent(fullContent) {
     if (isSummaryPhaseContent(fullContent)) {
       const cleaned = fullContent.replace(/【[^】]+】/g, '').trim();
       addSpeakerMessage('风玲', cleaned || fullContent.trim(), 'fengling');
+      collapseAdjacentDuplicateFenglingBubbles();
       return;
     }
     if (state.selectionMode === 'manual' && state.selectedCelebrities.length > 0) {
@@ -2620,6 +3466,7 @@ function renderFinalContent(fullContent) {
     } else {
       addSpeakerMessage('风玲', fullContent.trim(), 'fengling');
     }
+    collapseAdjacentDuplicateFenglingBubbles();
     return;
   }
   for (const seg of parsed) {
@@ -2636,6 +3483,7 @@ function renderFinalContent(fullContent) {
       actionsDiv.classList.add('show');
     }
   }
+  collapseAdjacentDuplicateFenglingBubbles();
 }
 
 // ========== 动态名人：为不在数据库中的名人创建临时条目 ==========
@@ -2700,10 +3548,15 @@ function parseLineStartSpeakerMarkers(content) {
     });
   }
 
-  // 过滤“伪发言标记”：主持人句内点名不应被当作嘉宾发言块
+  // 过滤“伪发言标记”：行内/句中的点名【嘉宾】应忽略；但**全文第一个**【】块无论风玲或嘉宾**一律保留**。
+  // 若丢弃首个【嘉宾】（例如其后紧跟「，请继续…」会命中下方规则），流式到后半段时首段会重解析、pre 风玲/首 morph → reconcile 把第 0 行从风玲变嘉宾，出现「主持头像闪一下变名人」。
   const filtered = [];
   for (let i = 0; i < markers.length; i++) {
     const cur = markers[i];
+    if (i === 0) {
+      filtered.push(cur);
+      continue;
+    }
     const next = markers[i + 1];
     const nextIndex = next ? next.index : content.length;
     const preview = content.slice(cur.end, Math.min(nextIndex, cur.end + 48)).trimStart();
@@ -2788,8 +3641,8 @@ function parseMultiSpeaker(content, skipPreText = false) {
 
 // ========== 从发言段落中自动识别并添加嘉宾 ==========
 function autoAddSpeakersFromParsed(parsed) {
-  // 主持人模式会议中：嘉宾名单已锁定，禁止自动添加任何新嘉宾
-  if (state.selectionMode === 'auto' && state.meetingStarted) return;
+  // 正式三阶段进行中：名单锁定不自动加人；会后自由对答可随【】出现把库内嘉宾补进顶栏
+  if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) return;
 
   let changed = false;
   for (const seg of parsed) {
@@ -2803,7 +3656,11 @@ function autoAddSpeakersFromParsed(parsed) {
   }
   if (changed) {
     updateGuestBar();
-    headerSubtitle.textContent = `${state.selectedCelebrities.length} 位嘉宾就座`;
+    if (state.selectionMode === 'auto' && state.meetingEnded) {
+      headerSubtitle.textContent = `${state.selectedCelebrities.length} 位嘉宾已确认，会议进行中`;
+    } else {
+      headerSubtitle.textContent = `${state.selectedCelebrities.length} 位嘉宾就座`;
+    }
   }
 }
 
@@ -2880,211 +3737,538 @@ function checkAndApplyRecommendations(content) {
   }
 }
 
-// ========== 检查是否需要继续生成 ==========
-// 如果风玲引导了嘉宾发言，但AI没有生成嘉宾的回复，自动继续请求
-async function checkAndContinueGeneration(content) {
-  // 会前推荐阶段和已结束阶段都不做自动续写，避免死循环
-  if (state.selectionMode === 'auto' && (!state.meetingStarted || state.meetingEnded)) return;
-  // 总结阶段：只由风玲总结，不触发任何嘉宾续写
-  if (state.summaryReady) return;
+/**
+ * 会中在场嘉宾的 key 列表（不含风玲、不含用户已移出嘉宾）
+ */
+function getActiveGuestKeys() {
+  return (state.selectedCelebrities || []).filter(
+    k => k && k !== 'fengling' && !state.removedCelebrities.has(k)
+  );
+}
 
-  // 防"主持人连续邀请用户但用户没回复"导致死循环：
-  // 用户回复时会清零；只要计数 >= 2 一律不再续写
-  if ((state.consecutiveUserInvitePending || 0) >= 2) {
-    console.warn('[自动续写] 主持人已连续多次邀请用户但用户尚未回复，停止续写');
-    return;
+function getMissingGuestKeysFromParsed(parsed) {
+  const baseKeys = getActiveGuestKeys();
+  if (baseKeys.length === 0) return [];
+  const nextSeg = getHostNextSegment();
+  let guestKeys = baseKeys;
+  const allow = state.stage3GuestAllowlistKeys;
+  if (nextSeg === 3 && Array.isArray(allow) && allow.length > 0) {
+    const allowSet = new Set(allow);
+    guestKeys = baseKeys.filter(k => allowSet.has(k));
+    if (guestKeys.length === 0) guestKeys = baseKeys;
+  }
+  const spoken = new Set(
+    (parsed || []).filter(s => s && s.key && s.key !== 'fengling').map(s => s.key)
+  );
+  return guestKeys.filter(k => !spoken.has(k));
+}
+
+/** 段末【风玲】是否把话筒交给用户（若是则不应再自动续嘉宾） */
+function isHostHandoffToUserText(t) {
+  const s = String(t || '');
+  if (!s.trim()) return false;
+  if (/您怎么看|你怎么看|你更倾向|你的看法|请你分享|你来决定|是否继续|要不要继续|用户朋友|在座.*只有.?你/.test(s)) {
+    return true;
+  }
+  if (/还有什么想.*问|需要我.*总结|可以.*结束|是否.*结束本场|要不要.*收尾/.test(s)) return true;
+  return false;
+}
+
+/**
+ * 从段末主持语里捞出「仍被要求发言」的嘉宾 key（用于 missing 已为 0 但主持追加任务的场景）
+ */
+function extractGuestKeysForHostFollowUp(tailText) {
+  const raw = String(tailText || '');
+  const active = getActiveGuestKeys();
+  if (!raw.trim() || active.length === 0) return [];
+
+  const out = [];
+  const seen = new Set();
+
+  for (const key of active) {
+    const dn = CELEBRITIES[key]?.displayName || '';
+    if (!dn) continue;
+    if (raw.includes(dn)) {
+      out.push(key);
+      seen.add(key);
+      continue;
+    }
+    if (/·/.test(dn)) {
+      const tailName = dn.split('·').pop();
+      if (tailName && tailName.length >= 2 && raw.includes(tailName)) {
+        out.push(key);
+        seen.add(key);
+      }
+    }
   }
 
-  // 绝对递归深度保护（不区分成功/失败），防止风玲←→嘉宾无限循环
+  for (const m of raw.matchAll(/【([^】]+)】/g)) {
+    const k = findCelebrityKeyByDisplayName((m[1] || '').trim());
+    if (k && active.includes(k) && !seen.has(k)) {
+      out.push(k);
+      seen.add(k);
+    }
+  }
+
+  if (out.length > 0) return out;
+
+  if (/(各位|大家|几位嘉宾|在场.*嘉宾|请你们|请大家)/.test(raw)) {
+    return [...active];
+  }
+  return [];
+}
+
+/**
+ * 第1/2段：同条前半嘉宾已齐，但段末【风玲】又向嘉宾追加深入/补充任务 → 只续写嘉宾段
+ */
+function buildHostTailGuestFollowUpPrompt(guestKeys, nextSeg, hostIntentHint) {
+  const names = guestKeys.map(k => CELEBRITIES[k]?.displayName).filter(Boolean);
+  if (names.length === 0) {
+    return '[系统提示] 请按段末【风玲】对嘉宾的布置，补全【】嘉宾发言，不要输出【风玲】。';
+  }
+  const stageLabel = nextSeg === 1 ? '一·首轮分析' : nextSeg === 2 ? '二·补充与深化' : '三·共识与分歧';
+  const intentBlock =
+    hostIntentHint && hostIntentHint.trim()
+      ? `\n**本条前文 + 段末【风玲】任务（须紧扣）**：\n「${hostIntentHint}」\n`
+      : '';
+  return (
+    `[系统提示] 当前为**第${nextSeg}段/阶段${stageLabel}**。${intentBlock}` +
+    '同一条里**前面**已有【嘉宾】段落，但**最后一段【风玲】仍向嘉宾提出新的深入、补充或交锋安排。**请只输出**以下嘉宾针对该**新任务**的【】段落（**不要**再输出【风玲】）：' +
+    names.map(n => '【' + n + '】').join('、') +
+    '。\n**严禁**整段复述上文原句；**允许**因主持追加提问而在本阶段作**第二轮**简短发言（紧扣新任务即可）。' +
+    (nextSeg <= 2 ? '\n第1/2段勿展开与主持新任务无关的长篇。' : '')
+  );
+}
+
+/**
+ * 第1/2/3段：同一条里缺嘉宾时，只续嘉宾、不续风玲「衔接」
+ * @param {string} [hostIntentHint] 本条中已有【风玲】的引导摘要，续写时嘉宾须对准该意图
+ */
+function buildMissingGuestsContinuePrompt(missingKeys, nextSeg, hostIntentHint) {
+  const names = missingKeys.map(k => CELEBRITIES[k]?.displayName).filter(Boolean);
+  if (names.length === 0) {
+    return '[系统提示] 请为尚未用【】标记完整发言的嘉宾补全发言段落，不要输出【风玲】。';
+  }
+  const stageLabel = nextSeg === 1 ? '一·首轮分析' : nextSeg === 2 ? '二·补充与深化' : '三·共识与分歧';
+  const hasS3Allowlist =
+    nextSeg === 3 && Array.isArray(state.stage3GuestAllowlistKeys) && state.stage3GuestAllowlistKeys.length > 0;
+  const s3UnscopedMissing = nextSeg === 3 && !hasS3Allowlist;
+  const intentBlock =
+    hostIntentHint && hostIntentHint.trim()
+      ? `\n**本条中【风玲】已交代的讨论任务与方向如下**（未出场嘉宾须**紧扣**其提问、角度、人物关系与顺序，勿泛泛独白）：\n「${hostIntentHint}」\n`
+      : '\n**须**按同条中【风玲】对发言顺序、回应对象的布置来落稿，禁止脱离主持刚设定的角度。\n';
+  return (
+    `[系统提示] 当前是主持人模式**第${nextSeg}段/阶段${stageLabel}**。${intentBlock}` +
+    '本段为「风玲**仅在**全条**最前**出现**一次**作引导，其后**只**有各位**嘉宾**段落；在**第1、2 段**要求**每位嘉宾在本阶段仅一段【】发言（每人一次）**；在**前两个阶段**的每一次输出中，**禁止**在两位嘉宾的段落**之间**再插入【风玲】。' +
+    '本轮续写是补全**尚未发言/未以【】完整落地**的嘉宾。请**只输出**以下嘉宾的段落，按顺序' +
+    (nextSeg <= 2 ? '、**每人本阶段仅一段**' : s3UnscopedMissing ? '、**每位宜一段为宜**' : '、每人至少一段') +
+    '，**不要**输出【风玲】：' +
+    names.map(n => '【' + n + '】').join('、') +
+    (nextSeg <= 2
+      ? '\n**第1/2 段**不得让已出场同一人本阶段内再开第二长段；**句内轻量接话**可，多轮对辩**留到第三段**。\n' +
+        '**须**承接段首【风玲】的交锋点/提问/顺序，勿泛泛独白。严禁整段复述上文已说过的原句。'
+      : s3UnscopedMissing
+        ? '\n**⚠️ 阶段三·当前拍无点名白名单**：**仅**完成上列嘉宾（续写链已节制人数）；**禁止**为凑齐在场名单而让**其余**未列名者各写一整段；须留待【风玲】把话筒交还用户、由下一条用户话再点名。\n嘉宾可短接，须承接主持交锋点。严禁整段复述上文已说过的原句。'
+        : '\n嘉宾之间可自然接话、多轮辩驳，但**须承接主持给出的交锋点/提问**。严禁整段复述上文已说过的原句。') +
+    (hasS3Allowlist
+      ? '\n**⚠️ 本轮为用户点名的子集**：除以上补全对象外，**其它在场嘉宾不得**新开长篇【】段；确需时最多一句旁白。'
+      : '')
+  );
+}
+
+/**
+ * 阶段一或阶段二在「单条最前风玲+本段全部嘉宾」已齐后，拉取下一段的续写系统提示
+ * @param {1|2} finishedStage 刚完整结束的是第几段（1=阶段一，2=阶段二）
+ */
+function buildAdvanceToNextHostedStagePrompt(finishedStage) {
+  if (finishedStage === 1) {
+    return (
+      '[系统提示] 上一条已**完整完成阶段一**（最前【风玲】+本段全体【嘉宾】各一段）。\n' +
+      '请在本对话中**立即**输出**阶段二·补充与深化**对应的一条（一次回复内）：' +
+      '全条**最前**为**唯一**【风玲】，点明本段要「补充、拓展、深化或温和修正」阶段一观点；' +
+      '之后**只**有各位【嘉宾】在本阶段的发言段落；**阶段二仍须每位嘉宾只写一段**；**不要**在嘉宾之间插入【风玲】，**不要**在段末单独增加风玲收束/小结。'
+    );
+  }
+  return (
+    '[系统提示] 上一条已**完整完成阶段二**（最前风玲+本段全体【嘉宾】各一段）。\n' +
+    '请在本对话中**立即**输出**阶段三·共识、分歧与交锋**对应的一条（**与上一条阶段二有本质不同**——上一条是「每人**只**一段、**不要**在嘉宾间插风玲、**不要**多轮对辩」；**本条起**才允许**自由讨论**与风玲**穿插**衔接）：' +
+    '全条**最前**先用**唯一一段**【风玲】、用**自然口语**点明**「从这里开始是自由讨论」**（**勿**用「第几段」等机器话），可简要承接前两轮、再**转入**可交锋/可追问的氛围；' +
+    '随后嘉宾可**多轮**回应与辩难，风玲在**需衔接、邀用户、征求结束**时**可多次**以【风玲】出场。' +
+    '**不要**在无人明确同意时输出成稿式会议总结。'
+  );
+}
+
+/**
+ * 阶段一/二在一条内已产齐时，推入下一段的续写（完成一条链式 generateResponse；调用方 return true）
+ * @param {number} finishedStage 即当前主任务为「第 n 段」的 n（1=刚完成阶段一、2=刚完成阶段二），与下一条的 hostedRound 计数对齐
+ * @param {string} safetyGuards SAFETY 拼接段
+ */
+async function pushAndContinueHostedNextStage(finishedStage, safetyGuards) {
+  const stage = Math.min(2, Math.max(1, finishedStage));
+  state.hostedRound = stage;
+  state.autoContinueRetries = 0;
+  state.consecutiveUserInvitePending = 0;
+  state.s3BridgeFromGuestInFlight = false;
+  hostFlowResetLock();
+  const advance = buildAdvanceToNextHostedStagePrompt(stage) + (safetyGuards || '');
+  state.messages.push({ role: 'user', content: advance });
+  await generateResponse();
+  return true;
+}
+
+/**
+ * 第1/2段：同条内嘉宾已在解析中「到齐」，但末段【风玲】仍明显向嘉宾布置新任务 → 自动续写嘉宾段（避免误停等用户）
+ */
+async function tryContinueGuestAfterHostTailPrompt(parsed, nextSeg, safetyGuards) {
+  const hasGuestInThis =
+    (parsed || []).some(seg => seg && seg.key && seg.key !== 'fengling') === true;
+  const hasHost = parsed.some(seg => seg && seg.key === 'fengling');
+  const last = parsed[parsed.length - 1];
+  if (!last || last.key !== 'fengling' || !hasGuestInThis || !hasHost) return false;
+  if (nextSeg > 2) return false;
+
+  const fengSegs = parsed.filter(s => s && s.key === 'fengling');
+  const lastFeng = fengSegs.length ? fengSegs[fengSegs.length - 1] : null;
+  const lastFengText = lastFeng ? String(lastFeng.text || '').trim() : '';
+  if (
+    !lastFengText ||
+    isHostHandoffToUserText(lastFengText) ||
+    !shouldRequireGuestReplyFromHostByRegex(lastFengText)
+  ) {
+    return false;
+  }
+  const followKeys = extractGuestKeysForHostFollowUp(lastFengText);
+  if (followKeys.length === 0) return false;
+
+  state.autoContinueRetries = 0;
+  const intentHint = collectFenglingIntentFromParsed(parsed);
+  const followPrompt = buildHostTailGuestFollowUpPrompt(followKeys, nextSeg, intentHint) + safetyGuards;
+  console.log(`[自动续写] 第${nextSeg}段末【风玲】仍向嘉宾布置任务，续写：${followKeys.join(',')}`);
+  state.messages.push({ role: 'user', content: followPrompt });
+  await generateResponse();
+  return true;
+}
+
+// 如果风玲引导了嘉宾发言，但AI没有生成嘉宾的回复，自动继续请求
+// **编排原则**：三阶段与 `hostFlowLock`+`hostedRound` 强控。第三段**用户**每句经 `classifyFlowchartStage3UserIntent` 判**流程图** D/A/B/C/U；**风玲**收束问经 `classifyHostAskingUserToEnd`（无密钥时正则 `detectHostEndConfirmationPrompt` 兜底）。其余编排不靠关键词、不另调「风玲要停」LLM。
+// 返回 true 表示本层调用了 `generateResponse` 以链式续写；主流程据此决定是否递增 hostedRound
+// **编排**：三阶段只依据 `hostedRound` / `getHostNextSegment`、多说话人**解析结构**（末段、缺谁）、系统**硬注入**的 user 与 `hostFlowLock`；不用语义关键词、不调用 LLM 判「风玲要停」。
+async function checkAndContinueGeneration(content) {
+  if (state.selectionMode === 'auto' && (!state.meetingStarted || state.meetingEnded)) {
+    return false;
+  }
+  if (state.summaryReady) {
+    return false;
+  }
+
+  const inHost = state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded;
+  if (inHost && state.hostFlowLock === HostFlow.USER) {
+    console.log('[HostFlow] 强控：须等用户发话，跳过自动续写');
+    return false;
+  }
+  if (inHost && state.hostFlowLock === HostFlow.ONE_SHOT) {
+    state.hostFlowLock = HostFlow.OPEN;
+    console.log('[HostFlow] 强控：编排单停已消费，不续链');
+    return false;
+  }
+
+  if ((state.consecutiveUserInvitePending || 0) >= 2) {
+    console.warn('[自动续写] 主持人已连续多次邀请用户但用户尚未回复，停止续写');
+    return false;
+  }
+
   state.autoContinueDepth = (state.autoContinueDepth || 0) + 1;
   if (state.autoContinueDepth > 8) {
     console.warn('[自动续写] 达到绝对深度上限，停止续写');
-    return;
+    state.autoContinueDepth = Math.max(0, state.autoContinueDepth - 1);
+    return false;
   }
 
-  // 先做一次初步解析，以便判断 LLM 是否有有效推进
-  // 这里必须应用与渲染管线一致的过滤，否则会用"被污染"的段落做续写决策
-  let parsed = parseMultiSpeaker(content)
-    .filter(seg => seg.key === 'fengling' || !isHostDirectiveText(seg.text));
-  if (state.selectionMode === 'auto' && state.meetingStarted) {
-    parsed = parsed.filter(seg => {
-      if (seg.key !== 'fengling') return true;
-      if (looksLikeFakeUserReplyEcho(seg.text)) return false;
-      return true;
-    });
-    parsed = filterFakeGuestRecap(parsed);
-  }
-
-  // 关键：LLM 本次确实产出了可识别的发言段 → 视为成功推进，重置连续失败计数
-  // autoContinueRetries 只用于防止"LLM 完全失败或反复不听话"的死循环
-  if (parsed.length > 0) {
-    state.autoContinueRetries = 0;
-  }
-  if (state.autoContinueRetries >= 5) return;
-
-  // 主持人模式：前3轮前不应直接输出最终总结
-  if (state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded) {
-    const hasSummaryWithoutApproval = detectMeetingSummary(content);
-    if (hasSummaryWithoutApproval && !state.summaryReady) {
-      state.autoContinueRetries += 1;
-      const correctionPrompt = state.awaitingEndConfirmation
-        ? '[系统提示] 用户尚未明确同意结束会议，请不要直接输出会议总结报告。此刻只允许由【风玲】等待用户决定，或温和询问用户是继续讨论还是结束。'
-        : (state.hostedRound < 3
-          ? '[系统提示] 当前讨论轮次不足3轮，请先继续深入讨论（至少到第3轮）再考虑总结；优先补充新观点与分歧碰撞，避免提前收尾。'
-          : (state.meetingFlowMode === 'three-round'
-            ? (state.userParticipationCount > 0
-              ? '[系统提示] 当前处于三轮会谈模式的第3阶段。未经用户明确同意结束前，不要输出会议总结报告；请继续围绕观点差异、赞同点与讨论中新获得的新知展开，或由【风玲】先询问用户会议是否可以结束。'
-              : '[系统提示] 当前处于三轮会谈模式的第3阶段，但用户尚未正式参与本轮互动。请先由【风玲】邀请用户表达倾向、追问分歧点或点名嘉宾回应，不要直接总结。')
-            : '[系统提示] 未经用户明确同意结束前，不要输出会议总结报告。请继续主持讨论，或由【风玲】先询问用户会议是否可以结束。'));
-      state.messages.push({
-        role: 'user',
-        content: correctionPrompt
-      });
-      await generateResponse();
-      return;
+  try {
+    // 只用于续写调度：可解析的【】+ 人员锁定；不在此函数内做风玲/嘉宾「复述」等文案启发式
+    const isOneOnOne = state.selectedCelebrities.length === 1;
+    let parsed = parseMultiSpeaker(content, isOneOnOne)
+      .filter(seg => seg.key === 'fengling' || !isHostDirectiveText(seg.text));
+    if (state.selectionMode === 'auto' && state.meetingStarted) {
+      parsed = filterAuthorizedSpeakers(parsed, content);
     }
 
-    if (
-      state.meetingFlowMode === 'three-round'
-      && state.hostedStage === 'user-interaction'
-      && state.userParticipationCount === 0
-      && detectHostEndConfirmationPrompt(content)
-    ) {
-      state.autoContinueRetries += 1;
-      state.messages.push({
-        role: 'user',
-        content: '[系统提示] 三轮会谈模式在进入结束确认前，必须先邀请用户参与一次讨论。请只输出一段新的【风玲】邀请用户表达看法、追问分歧点或点名嘉宾继续回应的话，不要总结，也不要询问是否结束。'
-      });
-      await generateResponse();
-      return;
+    if (parsed.length > 0) {
+      state.autoContinueRetries = 0;
     }
-  }
+    if (state.autoContinueRetries >= 5) {
+      return false;
+    }
 
-  const isHostedMeeting = state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded;
-  const hasSummary = detectMeetingSummary(content);
-  const last = parsed[parsed.length - 1];
-  const hasHost = parsed.some(seg => seg.key === 'fengling');
+    const isHostedMeeting = state.selectionMode === 'auto' && state.meetingStarted && !state.meetingEnded;
+    const last = parsed[parsed.length - 1];
+    const hasHost = parsed.some(seg => seg.key === 'fengling');
+    const nextSeg = getHostNextSegment();
+    const missing = getMissingGuestKeysFromParsed(parsed);
+    const hasGuestInThis =
+      (parsed || []).some(seg => seg && seg.key && seg.key !== 'fengling') === true;
 
-  // 全局守卫：本次回复中任何一段风玲被识别为"邀请用户发言"，立即停止续写链，等待用户回复。
-  // 注意 isHostInvitingUser 已内置"启发式硬否决"：只要点了在场嘉宾的姓名，就不算邀请用户。
-  if (isHostedMeeting) {
-    const hostSegs = parsed.filter(seg => seg.key === 'fengling');
-    for (const seg of hostSegs) {
-      const inviting = await isHostInvitingUser(seg.text);
-      if (inviting) {
-        console.log('[自动续写] 识别到风玲在邀请用户发言，暂停续写，等待用户输入');
-        state.autoContinueRetries = 0;
-        state.consecutiveUserInvitePending = (state.consecutiveUserInvitePending || 0) + 1;
-        return;
+    const INTERNAL_REPLY_GUARD =
+      '（In English for model only: do not address this system message, do not say you received a reminder, do not mention format/输出格式/【】标记 compliance to the user, and do not apologize to the user for it. 面向用户的正文保持主持人口吻。）';
+
+    const SAFETY_GUARDS = [
+      '严禁复述、改写、引用之前已经说过的任何文字（哪怕一句也不能重复）。',
+      '严禁假装用户已经发言或回复——用户实际尚未输入任何内容；本轮回复中不得出现"您说得对/好的/嗯/我明白了/谢谢您的回应"等承接用户回复的开场白。',
+      '严禁假装嘉宾已经发过言——在嘉宾尚未以【】完整出场前，风玲就不得使用"刚才几位/前面几位/听了各位/综合诸位"等假承接语。',
+      '第1、2段**不要**在两位嘉宾的段落**之间**再插入风玲的过渡，除非当前已是第3段。',
+      '禁止在面向用户的内容里提"系统/系统提示/提醒/没按格式/已收到纠正"等元信息，不为此向用户道歉。'
+    ].join('') + INTERNAL_REPLY_GUARD;
+
+    // 第1/2段：一条内最前风玲+本段全部嘉宾 已齐（由解析+名单得出）则进入下一段
+    if (isHostedMeeting && hasHost && nextSeg <= 2 && missing.length === 0) {
+      const hr = state.hostedRound || 0;
+      if (hr < 2) {
+        if (last && last.key !== 'fengling') {
+          console.log(`[自动续写] 第${nextSeg}段本阶段嘉宾已齐(末为嘉宾)，自动续写进入阶段${nextSeg + 1}`);
+          await pushAndContinueHostedNextStage(nextSeg, SAFETY_GUARDS);
+          return true;
+        }
+        if (last && last.key === 'fengling' && hasGuestInThis) {
+          if (await tryContinueGuestAfterHostTailPrompt(parsed, nextSeg, SAFETY_GUARDS)) {
+            return true;
+          }
+          // 条末违规多出一段【风玲】垫话/小结，但本段嘉宾已到齐且段末主持并未点名新课 → 视为阶段可推进（否则会误判「等用户」而卡住）
+          if (missing.length === 0) {
+            const needKeys = getActiveGuestKeys();
+            const spokenKeys = new Set(
+              parsed.filter(s => s && s.key && s.key !== 'fengling').map(s => s.key)
+            );
+            const allSpoke =
+              needKeys.length > 0 && needKeys.every(k => spokenKeys.has(k));
+            const tailFeng = [...parsed].reverse().find(s => s && s.key === 'fengling');
+            const tailTxt = String(tailFeng?.text || '').trim();
+            if (
+              allSpoke &&
+              tailTxt &&
+              !shouldRequireGuestReplyFromHostByRegex(tailTxt) &&
+              !isHostHandoffToUserText(tailTxt)
+            ) {
+              console.log(
+                `[自动续写] 第${nextSeg}段人到齐、末段【风玲】未形成新点名→推进下一阶段`
+              );
+              await pushAndContinueHostedNextStage(nextSeg, SAFETY_GUARDS);
+              return true;
+            }
+          }
+          state.suppressHostedRoundBumpAfterThisTurn = true;
+          hostFlowRequireUserTurn();
+          console.log(
+            `[自动续写] 第${nextSeg}段嘉宾已齐但末段为风玲：不链式进下一段，等待用户`
+          );
+          return false;
+        }
       }
     }
-    // 本次回复没有"邀请用户"段，重置连续计数
-    if (hostSegs.length > 0) {
-      state.consecutiveUserInvitePending = 0;
+
+    if (parsed.length === 0) {
+      if (isHostedMeeting) {
+        const hint1 =
+          nextSeg <= 2
+            ? '请用**全条最前**唯一【风玲】+**之后**只接各【嘉宾】；前两个阶段的同一条中**不要**在嘉宾之间插风玲。'
+            : '请用【风玲】与【嘉宾名】正确标记多说话人回复。';
+        state.autoContinueRetries += 1;
+        state.messages.push({
+          role: 'user',
+          content: `[系统提示] 上轮未按【名字】格式输出发言。${hint1}${SAFETY_GUARDS}`
+        });
+        await generateResponse();
+        return true;
+      }
+      return false;
     }
-  }
 
-  // 共用约束片段
-  const SAFETY_GUARDS = [
-    '严禁复述、改写、引用之前已经说过的任何文字（哪怕一句也不能重复）。',
-    '严禁假装用户已经发言或回复——用户实际尚未输入任何内容；本轮回复中不得出现"您说得对/好的/嗯/我明白了/谢谢您的回应"等承接用户回复的开场白。',
-    '严禁假装嘉宾已经发过言——只要嘉宾本轮还未真正发言，风玲就不得使用"刚才几位/前面几位/听了各位/综合诸位/几位先生的观点/几位的分享"等承接语；必须先让被邀请的嘉宾出场说话，再由风玲做过渡。',
-    '严禁在文中转述系统提示，禁止出现"系统提示/系统通知"等字样。'
-  ].join('');
-
-  // 情况1：没有解析出任何发言人（LLM 没按多说话人格式输出）
-  if (parsed.length === 0) {
-    if (isHostedMeeting && !hasSummary) {
-      state.autoContinueRetries += 1;
-      state.messages.push({
-        role: 'user',
-        content: `[系统提示] 上轮未按【名字】格式输出发言。请按主持人模式规范重新组织本轮：至少由【风玲】做一次简短收尾并引导下一位嘉宾发言。${SAFETY_GUARDS}`
-      });
-      await generateResponse();
-    }
-    return;
-  }
-
-  // 情况2：最后发言者是嘉宾（不是风玲）→ 必须补风玲引导下一轮，否则流程会卡住
-  if (isHostedMeeting && !hasSummary && last && last.key !== 'fengling') {
-    console.log('[自动续写] 嘉宾发言后缺少主持人引导，自动补风玲收尾...');
-    state.messages.push({
-      role: 'user',
-      content: `[系统提示] 本轮最后缺少主持人收尾。请只输出一段全新的【风玲】衔接话（1-3句），内容必须是全新的引导话术。回复只包含这一段【风玲】，不要输出任何其他嘉宾的发言。${SAFETY_GUARDS}`
-    });
-    await generateResponse();
-    return;
-  }
-
-  // 情况3：整段没有主持人且不是总结
-  if (isHostedMeeting && !hasSummary && !hasHost) {
-    state.messages.push({
-      role: 'user',
-      content: `[系统提示] 本轮缺少主持人收尾。请补一段全新的【风玲】结束语引导下一轮（1-3句）。${SAFETY_GUARDS}`
-    });
-    await generateResponse();
-    return;
-  }
-
-  // 情况4：最后发言者是风玲 → LLM 判定意图，决定是否续写嘉宾发言
-  if (last && last.key === 'fengling') {
-    const intent = await decideHostFollowUpIntent(last.text);
-    if (intent?.intent === 'user_invite') {
-      console.log('[自动续写] 判定风玲在邀请用户，等待用户回应');
-      state.autoContinueRetries = 0;
-      state.consecutiveUserInvitePending = (state.consecutiveUserInvitePending || 0) + 1;
-      return;
-    }
-    if (intent?.intent === 'guest_invite' && state.selectedCelebrities.length > 0) {
-      console.log('[自动续写] 判定风玲在邀请嘉宾，续写嘉宾发言', intent.targets);
-      const continuePrompt = buildGuestFollowUpPrompt(last.text, intent?.targets || []) + SAFETY_GUARDS;
+    if (isHostedMeeting && last && last.key !== 'fengling' && missing.length > 0) {
+      const hostIntent = collectFenglingIntentFromParsed(parsed);
+      const hasS3Allowlist =
+        nextSeg === 3 &&
+        Array.isArray(state.stage3GuestAllowlistKeys) &&
+        state.stage3GuestAllowlistKeys.length > 0;
+      let missingUse = missing;
+      if (nextSeg === 3 && !hasS3Allowlist) {
+        if (state.stage3UnscopedCatchupUsed) {
+          const handback =
+            '[系统提示] **阶段三·本拍已做过一轮「缺嘉宾」续写**，不得再链式要求其余未发言者各一整段。请**仅输出一段【风玲】**：承接上文、简短收束，并**把话筒交给用户**（邀请继续点名、追问或表态）；**不要**再输出任何【嘉宾】段。' +
+            SAFETY_GUARDS;
+          state.messages.push({ role: 'user', content: handback });
+          hostFlowArmOneShotStop();
+          await generateResponse();
+          return true;
+        }
+        missingUse = missing.slice(0, 2);
+        state.stage3UnscopedCatchupUsed = true;
+      }
+      const continuePrompt = buildMissingGuestsContinuePrompt(missingUse, nextSeg, hostIntent) + SAFETY_GUARDS;
       state.messages.push({ role: 'user', content: continuePrompt });
       await generateResponse();
-      return;
+      return true;
     }
-    if (
-      isHostedMeeting
-      && state.meetingFlowMode === 'three-round'
-      && state.hostedStage === 'round3'
-      && state.userParticipationCount === 0
-      && intent?.intent === 'none'
-    ) {
+
+    // 阶段三：最后为嘉宾、人齐 → 系统强注入【风玲】一拍，随后等用户（不判话术关键词/LLM）
+    if (isHostedMeeting && last && last.key !== 'fengling' && nextSeg === 3 && missing.length === 0) {
+      if (state.s3BridgeFromGuestInFlight) {
+        console.log('[自动续写] 已在同链中做过「S3 嘉宾末→补风玲」，不重复强注入，等用户');
+        hostFlowRequireUserTurn();
+        return false;
+      }
+      console.log('[自动续写] 第3段末为嘉宾(人齐)，先补风玲：衔接+问继续/可否收束/总结前确认');
+      state.s3BridgeFromGuestInFlight = true;
+      try {
+        // 嵌套 generate 结束前 hostFlow 仍为 OPEN，内层 checkAndContinue 会再把「末位嘉宾」当条件二次补风玲或走缺【风玲】链 → 主持连说多拍。单停后内层只落盘、不再续链。
+        hostFlowArmOneShotStop();
+        const s3NamedRound =
+          Array.isArray(state.stage3GuestAllowlistKeys) && state.stage3GuestAllowlistKeys.length > 0
+            ? '若上轮为**用户点名**的局部回应，收束时**勿**再拉「全员各说一段」；**务必**把话语权**明确交还用户**，等待下一条用户话走流程图。'
+            : '若用户**未**要求全员表态，收束时**勿**再按在场名单补足「尚未发言的」嘉宾各一长段；**务必**把话筒**明确交还用户**。';
+        state.messages.push({
+          role: 'user',
+          content:
+            '[系统提示] 当前为**阶段三**，上一条在本条**最后**为**嘉宾**发言。请**只输出**一段【风玲】：自然承接**用户**（若上文中用户已插话/提问，必须点题回应）与嘉宾的交锋，' +
+            '并用口语**明确问用户**：还有无补充/追问，或**是否可以结束本场主题、进入收束**（征求意见，勿无人同意就下长篇总结）。1～6 句。**不要**输出任何嘉宾段落，勿直接输出成稿式总结。' +
+            (s3NamedRound ? '\n' + s3NamedRound : '') +
+            SAFETY_GUARDS
+        });
+        await generateResponse();
+      } finally {
+        state.s3BridgeFromGuestInFlight = false;
+      }
+      hostFlowRequireUserTurn();
+      state.consecutiveUserInvitePending = (state.consecutiveUserInvitePending || 0) + 1;
+      return true;
+    }
+
+    if (isHostedMeeting && !hasHost) {
+      const hint = nextSeg <= 2
+        ? '请用**最前**唯一【风玲】+**仅随后**各【嘉宾】；第1/2段勿在嘉宾之间再插风玲。'
+        : '请用【风玲】开场或收束。';
+      // 同 S3 嵌套：无【风玲】的补写一拍须停，避免内层再判「无主持」/缺人链式多拍。
+      hostFlowArmOneShotStop();
       state.messages.push({
         role: 'user',
-        content: `[系统提示] 当前已进入三轮会谈模式的第3阶段。请由【风玲】主动邀请用户参与本轮讨论：让用户表达倾向、追问某个分歧点，或点名某位嘉宾回应。不要直接总结，也不要询问是否结束。${SAFETY_GUARDS}`
+        content: `[系统提示] 本轮未出现【风玲】段落。${hint}（1-3 句）${SAFETY_GUARDS}`
       });
       await generateResponse();
-      return;
+      return true;
     }
-    // intent === 'none'：风玲既没邀请用户也没点名嘉宾（可能是中立陈述/收尾语）
-    console.log('[自动续写] 判定风玲发言无明确邀请意图，停止续写');
-    state.autoContinueRetries = 0;
-    return;
-  }
 
-  // 其他情况：流程正常
-  state.autoContinueRetries = 0;
+    if (last && last.key === 'fengling') {
+      if (nextSeg <= 2 && missing.length > 0) {
+        state.autoContinueRetries = 0;
+        const hostIntentM = collectFenglingIntentFromParsed(parsed);
+        const continuePrompt = buildMissingGuestsContinuePrompt(missing, nextSeg, hostIntentM) + SAFETY_GUARDS;
+        state.messages.push({ role: 'user', content: continuePrompt });
+        await generateResponse();
+        return true;
+      }
+      if (nextSeg === 3) {
+        const fengSegs = parsed.filter(s => s && s.key === 'fengling');
+        const lastFeng = fengSegs.length ? fengSegs[fengSegs.length - 1] : null;
+        const lastFengText = lastFeng ? String(lastFeng.text || '').trim() : '';
+
+        // 阶段三：末段为【风玲】且主持已「请某某谈」但同条尚无对应【嘉宾】时须续写嘉宾（勿误判为「只等用户」）
+        if (
+          missing.length > 0 &&
+          shouldRequireGuestReplyFromHostByRegex(lastFengText) &&
+          !isHostHandoffToUserText(lastFengText)
+        ) {
+          const allow = state.stage3GuestAllowlistKeys;
+          let followKeys = extractGuestKeysForHostFollowUp(lastFengText);
+          if (Array.isArray(allow) && allow.length > 0) {
+            const allowSet = new Set(allow);
+            followKeys = followKeys.filter(k => allowSet.has(k));
+          }
+          const spoken = new Set(
+            (parsed || []).filter(s => s && s.key && s.key !== 'fengling').map(s => s.key)
+          );
+          let missingUse =
+            followKeys.length > 0 ? followKeys.filter(k => !spoken.has(k)) : [...missing];
+          if (missingUse.length === 0) missingUse = [...missing];
+
+          const hostIntentM = collectFenglingIntentFromParsed(parsed);
+          const hasS3Allowlist =
+            Array.isArray(state.stage3GuestAllowlistKeys) &&
+            state.stage3GuestAllowlistKeys.length > 0;
+          let toEmit = missingUse;
+          if (!hasS3Allowlist) {
+            if (state.stage3UnscopedCatchupUsed) {
+              const handback =
+                '[系统提示] **阶段三·本拍已做过一轮「缺嘉宾」续写**，不得再链式要求其余未发言者各一整段。请**仅输出一段【风玲】**：承接上文、简短收束，并**把话筒交给用户**（邀请继续点名、追问或表态）；**不要**再输出任何【嘉宾】段。' +
+                SAFETY_GUARDS;
+              state.messages.push({ role: 'user', content: handback });
+              hostFlowArmOneShotStop();
+              await generateResponse();
+              return true;
+            }
+            toEmit = missingUse.slice(0, 2);
+            state.stage3UnscopedCatchupUsed = true;
+          }
+
+          state.autoContinueRetries = 0;
+          const continuePrompt =
+            buildMissingGuestsContinuePrompt(toEmit, nextSeg, hostIntentM) + SAFETY_GUARDS;
+          state.messages.push({ role: 'user', content: continuePrompt });
+          await generateResponse();
+          return true;
+        }
+
+        state.autoContinueRetries = 0;
+        hostFlowRequireUserTurn();
+        console.log('[自动续写] 阶段三末为风玲，结束链式续写，等待用户');
+        return false;
+      }
+      if (nextSeg <= 2 && missing.length === 0) {
+        const hr = state.hostedRound || 0;
+        if (hr < 2 && hasGuestInThis && hasHost) {
+          if (await tryContinueGuestAfterHostTailPrompt(parsed, nextSeg, SAFETY_GUARDS)) {
+            return true;
+          }
+          state.suppressHostedRoundBumpAfterThisTurn = true;
+          hostFlowRequireUserTurn();
+          console.log(
+            `[自动续写] 第${nextSeg}段末为风玲且人齐：不链式进下一段(兜底)，等待用户`
+          );
+          return false;
+        }
+        state.autoContinueRetries = 0;
+        console.log('[自动续写] 第1/2段风玲为末、不可推进，结束续写链');
+        return false;
+      }
+    }
+
+    state.autoContinueRetries = 0;
+    return false;
+  } finally {
+    state.autoContinueDepth = Math.max(0, (state.autoContinueDepth || 0) - 1);
+  }
+}
+
+/** 发往模型的助手消息再经清洗去重；本地 state.messages 存与聊天区一致的展示稿，便于历史详情与所见一致 */
+function mapAssistantMsgsForApiPayload(messages) {
+  return messages.map((msg) => {
+    if (msg.role !== 'assistant') return msg;
+    const forApi = pickAssistantMessageForApiHistory(msg.content);
+    return forApi && forApi.trim() ? { role: 'assistant', content: forApi } : msg;
+  });
 }
 
 // ========== 获取最近消息 ==========
 function getRecentMessages() {
   const maxRounds = CONFIG.maxHistoryRounds;
   const maxMessages = maxRounds * 2;
-  
-  // 获取最近的消息
-  let messages = state.messages.length <= maxMessages 
-    ? state.messages 
-    : state.messages.slice(-maxMessages);
-  
-  // 只过滤掉被用户手动删除的名人发言
-  // 保留所有其他消息（包括当前在座的、风玲的、用户的）
+
+  let messages =
+    state.messages.length <= maxMessages ? state.messages : state.messages.slice(-maxMessages);
+
   if (state.removedCelebrities.size === 0) {
-    // 没有删除任何名人，直接返回
-    return messages;
+    return mapAssistantMsgsForApiPayload(messages);
   }
-  
+
   const result = [];
-  
+
   for (const msg of messages) {
     // 用户消息始终保留
     if (msg.role === 'user') {
@@ -3129,8 +4313,8 @@ function getRecentMessages() {
       }
     }
   }
-  
-  return result;
+
+  return mapAssistantMsgsForApiPayload(result);
 }
 
 // ========== 名人选择面板 ==========
@@ -3213,9 +4397,16 @@ function confirmSelection() {
   state.meetingEnded = false;
   state.allowExternalCelebrities = false;
   state.pendingExternalApproval = false;
+  state.pendingInviteCelebrityVerify = null;
+  state.pendingInviteReplaceOldKey = null;
   state.lastRejectedExternalNames = [];
-  resetHostedMeetingProgress();
+  state.hostedRound = 0;
+  state.awaitingEndConfirmation = false;
+  state.summaryReady = false;
   state.autoContinueRetries = 0;
+  state.stage3GuestAllowlistKeys = null;
+  state.stage3UnscopedCatchupUsed = false;
+  hostFlowResetLock();
   
   // 从删除黑名单中移除当前选中的名人（用户重新邀请了）
   for (const key of selected) {
@@ -3338,8 +4529,15 @@ function updateGuestBar() {
         state.meetingEnded = false;
         state.allowExternalCelebrities = false;
         state.pendingExternalApproval = false;
+        state.pendingInviteCelebrityVerify = null;
+        state.pendingInviteReplaceOldKey = null;
         state.lastRejectedExternalNames = [];
-        resetHostedMeetingProgress();
+        state.hostedRound = 0;
+        state.awaitingEndConfirmation = false;
+        state.summaryReady = false;
+        state.stage3GuestAllowlistKeys = null;
+        state.stage3UnscopedCatchupUsed = false;
+        hostFlowResetLock();
         state.selectionMode = 'auto';
         headerSubtitle.textContent = '点击右侧 + 邀请嘉宾';
       } else {
@@ -3458,12 +4656,28 @@ function setupChatScrollTracking() {
     });
   }, { passive: true });
 
+  // 上滑/滚轮向上：尽快标记为「在看上文」，避免流式下一帧抢滚到底
+  chatArea.addEventListener('wheel', (e) => {
+    if (e.deltaY < 0) userScrolledUp = true;
+  }, { passive: true });
+
+  let touchStartY = 0;
+  chatArea.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    if (t) touchStartY = t.clientY;
+  }, { passive: true });
+  chatArea.addEventListener('touchmove', (e) => {
+    const t = e.touches[0];
+    if (!t) return;
+    if (t.clientY - touchStartY > 10) userScrolledUp = true;
+  }, { passive: true });
+
   const bottomBtn = document.getElementById('scrollToBottomBtn');
   if (bottomBtn) {
     bottomBtn.addEventListener('click', () => {
       userScrolledUp = false;
       hideScrollToBottomBtn();
-      chatArea.scrollTop = chatArea.scrollHeight;
+      chatArea.scrollTo({ top: chatArea.scrollHeight, behavior: 'smooth' });
     });
   }
 
@@ -3476,6 +4690,495 @@ function setupChatScrollTracking() {
       chatArea.scrollTo({ top: 0, behavior: 'smooth' });
     });
   }
+}
+
+// ========== 对话链接分享（公众号样式 · 打开链接还原气泡） ==========
+const SHARE_PAYLOAD_VER = 1;
+const SHARE_URL_MAX_LEN = 11500;
+
+async function gzipJsonToBase64Url(obj) {
+  const json = JSON.stringify(obj);
+  const enc = new TextEncoder().encode(json);
+  const cs = new CompressionStream('gzip');
+  const stream = new Blob([enc]).stream().pipeThrough(cs);
+  const buf = await new Response(stream).arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + step, bytes.length)));
+  }
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function gunzipBase64UrlToJson(raw) {
+  let b64 = raw.replace(/-/g, '+').replace(/_/g, '/');
+  while (b64.length % 4) b64 += '=';
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const ds = new DecompressionStream('gzip');
+  const blob = new Blob([bytes]).stream().pipeThrough(ds);
+  const text = await new Response(blob).text();
+  return JSON.parse(text);
+}
+
+function extractSharePayloadRawFromLocation() {
+  const h = location.hash || '';
+  if (h.startsWith('#share=v1.')) return h.slice('#share=v1.'.length);
+  const q = new URLSearchParams(location.search).get('share');
+  if (q && q.startsWith('v1.')) return q.slice(3);
+  return '';
+}
+
+function inferAssistantKeyFromMessageEl(node) {
+  const k = node.dataset && node.dataset.speakerKey;
+  if (k) return k;
+  const nameEl = node.querySelector('.message-name');
+  const name = nameEl ? nameEl.textContent.trim() : '';
+  if (!name) return 'fengling';
+  return ensureCelebrityEntry(name);
+}
+
+function buildConversationSharePayloadFromDom() {
+  const items = [];
+  let title = '';
+  if (!chatArea) return { v: SHARE_PAYLOAD_VER, title: '', items: [] };
+
+  for (const node of chatArea.children) {
+    if (!node || node.nodeType !== 1) continue;
+    if (node.id === 'typingMsg') continue;
+
+    if (node.classList.contains('system-notice')) {
+      const t = node.textContent.trim();
+      if (t) items.push({ m: 'sy', c: t });
+      continue;
+    }
+
+    if (node.classList.contains('message')) {
+      const bubble = node.querySelector('.message-bubble');
+      if (!bubble) continue;
+      const inner = bubble.innerText.trim();
+      if (!inner) continue;
+
+      if (node.classList.contains('user')) {
+        items.push({ m: 'us', c: inner });
+        if (!title && !isInternalOrchestratorUserLine(inner)) {
+          let tt = inner.replace(/^用户原话[：:]\s*/i, '').trim();
+          title = tt.slice(0, 56);
+        }
+      } else {
+        const nameEl = node.querySelector('.message-name');
+        const speaker = nameEl ? nameEl.textContent.trim() : '嘉宾';
+        const key = inferAssistantKeyFromMessageEl(node);
+        items.push({ m: 'as', s: speaker, k: key, c: inner });
+      }
+    }
+  }
+
+  return {
+    v: SHARE_PAYLOAD_VER,
+    title: title || '光年之约圆桌会',
+    items,
+  };
+}
+
+async function buildShareableConversationUrlWithTrimming(payload) {
+  let p = { v: payload.v, title: payload.title, items: [...payload.items] };
+  const base = `${location.origin}${location.pathname}`;
+  if (typeof CompressionStream === 'undefined') {
+    return { ok: false, reason: 'NO_COMPRESS' };
+  }
+  for (;;) {
+    try {
+      const frag = await gzipJsonToBase64Url(p);
+      const url = `${base}#share=v1.${frag}`;
+      if (url.length <= SHARE_URL_MAX_LEN) {
+        return { ok: true, url, titlePreview: p.title };
+      }
+    } catch (e) {
+      console.warn(e);
+      return { ok: false, reason: 'ENCODE' };
+    }
+    if (p.items.length <= 1) return { ok: false, reason: 'TOOLONG' };
+    p.items.shift();
+  }
+}
+
+function insertShareViewBanner() {
+  const chat = chatArea;
+  if (!chat) return;
+  if (chat.previousElementSibling && chat.previousElementSibling.classList.contains('share-view-banner')) return;
+  const banner = document.createElement('div');
+  banner.className = 'share-view-banner';
+  banner.innerHTML =
+    '<span class="share-view-banner-text">以下为好友分享的圆桌对话</span>' +
+    '<button type="button" class="share-view-banner-btn" id="shareViewStartBtn">开启我的圆桌</button>';
+  chat.parentNode.insertBefore(banner, chat);
+  const btn = document.getElementById('shareViewStartBtn');
+  if (btn) btn.addEventListener('click', () => { location.href = location.pathname + (location.search || ''); });
+}
+
+async function tryHydrateShareFromUrl() {
+  const raw = extractSharePayloadRawFromLocation();
+  if (!raw) return false;
+
+  if (typeof DecompressionStream === 'undefined') {
+    history.replaceState(null, '', location.pathname + location.search);
+    showToast('当前浏览器无法还原分享内容，请升级系统浏览器后再试');
+    return false;
+  }
+
+  let data;
+  try {
+    data = await gunzipBase64UrlToJson(raw);
+  } catch (e) {
+    console.warn(e);
+    history.replaceState(null, '', location.pathname + location.search);
+    showToast('分享链接无效或已损坏');
+    return false;
+  }
+
+  if (!data || data.v !== SHARE_PAYLOAD_VER || !Array.isArray(data.items)) {
+    history.replaceState(null, '', location.pathname + location.search);
+    showToast('分享链接格式不正确');
+    return false;
+  }
+
+  state.shareViewMode = true;
+  state.importingSharePayload = true;
+  chatArea.innerHTML = '';
+
+  for (const it of data.items) {
+    if (it.m === 'sy') addSystemNotice(it.c);
+    else if (it.m === 'us') addUserMessage(it.c);
+    else if (it.m === 'as')
+      addSpeakerMessage(it.s || '嘉宾', it.c, it.k || ensureCelebrityEntry(it.s || ''));
+  }
+
+  state.importingSharePayload = false;
+
+  const appEl = document.getElementById('app');
+  if (appEl) appEl.classList.add('share-view-mode');
+  if (headerSubtitle) headerSubtitle.textContent = '分享的对话';
+  if (guestBar) guestBar.style.display = 'none';
+  if (inputArea) inputArea.style.display = 'none';
+
+  insertShareViewBanner();
+
+  history.replaceState(null, '', location.pathname + location.search);
+
+  scrollToBottom(true);
+
+  return true;
+}
+
+function openConversationShareSheet() {
+  const el = document.getElementById('conversationShareSheetModal');
+  if (el) el.classList.add('active');
+}
+
+function closeConversationShareSheet() {
+  const el = document.getElementById('conversationShareSheetModal');
+  if (el) el.classList.remove('active');
+}
+
+async function copyPendingShareUrlAndToast(toastMsg) {
+  const url = window.pendingConversationShareUrl || '';
+  if (!url) {
+    showToast('分享链接丢失，请重试');
+    return;
+  }
+  const ok = await copyConversationShareTextToClipboard(url);
+  if (!ok) {
+    showToast('复制失败，请长按链接手动复制');
+    return;
+  }
+  showToast(toastMsg);
+}
+
+/**
+ * 在系统浏览器中尝试唤起微信主界面（用户已复制内容后切换过去粘贴）。
+ * 微信内置 WebView 内无效；无法深链到「朋友圈编辑页」——该能力仅开放给绑域的公众号 JSSDK。
+ */
+function tryOpenWeChatApp() {
+  if (isWeChatWebView()) return;
+  setTimeout(() => {
+    try {
+      window.location.href = 'weixin://';
+    } catch (_) {}
+  }, 120);
+}
+
+/**
+ * @param {'friend'|'moment'} mode
+ */
+async function copyRichPendingShareAndToast(mode) {
+  const url = window.pendingConversationShareUrl || '';
+  if (!url) {
+    showToast('分享链接丢失，请重试');
+    return;
+  }
+  const title = (document.getElementById('shareSheetTitle')?.textContent || '光年之约圆桌会').trim();
+  let clip;
+  if (mode === 'friend') {
+    clip = `${title}\n光年之约圆桌会 · 点此链接查看完整对话\n${url}`;
+  } else {
+    clip = `${title} · 圆桌对话\n${url}`;
+  }
+  const ok = await copyConversationShareTextToClipboard(clip);
+  if (!ok) {
+    showToast('复制失败，请长按链接手动复制');
+    return;
+  }
+  if (!isWeChatWebView()) tryOpenWeChatApp();
+  if (isWeChatWebView()) {
+    showToast(
+      mode === 'moment'
+        ? '文案与链接已复制，发朋友圈时长按粘贴即可'
+        : '文案与链接已复制，粘贴到会话发送即可'
+    );
+  } else {
+    showToast(
+      mode === 'moment'
+        ? '已复制，正尝试打开微信；发朋友圈时在正文长按粘贴（若未跳转请手动打开微信）'
+        : '已复制，正尝试打开微信；在会话中长按粘贴发送（若未跳转请手动打开微信）'
+    );
+  }
+}
+
+async function sharePendingUrlViaNativeIfPossible(title, text) {
+  const url = window.pendingConversationShareUrl || '';
+  if (!url) return false;
+  if (isWeChatWebView()) return false;
+  if (!navigator.share || typeof navigator.share !== 'function') return false;
+  try {
+    await navigator.share({ title, text: text || title, url });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ========== 导出当前会话为长图 ==========
+function stripCloneDom(root) {
+  if (!root) return;
+  root.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+  root.querySelectorAll('[for]').forEach((el) => el.removeAttribute('for'));
+}
+
+/** 长图仅从「真实用户首句提问」起截取（跳过编排层占位用户行等） */
+function trimExportChatCloneFromFirstRealUser(chatClone) {
+  const nodes = Array.from(chatClone.children);
+  let started = false;
+  for (const el of nodes) {
+    if (!el || el.nodeType !== 1) continue;
+    if (el.id === 'typingMsg') {
+      el.remove();
+      continue;
+    }
+    if (!started) {
+      const isUser =
+        el.classList &&
+        el.classList.contains('message') &&
+        el.classList.contains('user');
+      if (isUser) {
+        const bubble = el.querySelector('.message-bubble');
+        const inner = bubble ? bubble.innerText.trim() : '';
+        if (inner && !isInternalOrchestratorUserLine(inner)) {
+          started = true;
+          continue;
+        }
+      }
+      el.remove();
+      continue;
+    }
+  }
+  return started;
+}
+
+function preloadExportQrImage(srcUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error('公众号二维码图片加载失败'));
+    img.src = srcUrl;
+  });
+}
+
+/** 避免 html2canvas 截取时仍处于 fadeInUp 等动画前半段，导致整条画布发灰、像蒙了一层版 */
+function prepareDomForChatExport(root) {
+  if (!root) return;
+  root.querySelectorAll('.message').forEach((el) => {
+    el.style.setProperty('animation', 'none', 'important');
+    el.style.setProperty('opacity', '1', 'important');
+    el.style.setProperty('transform', 'none', 'important');
+  });
+  root.querySelectorAll('.guest-chip, .guest-bar, .pause-banner, .header').forEach((el) => {
+    el.style.setProperty('animation', 'none', 'important');
+    el.style.setProperty('transition', 'none', 'important');
+  });
+}
+
+function loadHtml2CanvasLib() {
+  return new Promise((resolve, reject) => {
+    if (typeof html2canvas !== 'undefined') return resolve(html2canvas);
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+    s.async = true;
+    s.dataset.html2canvas = '1';
+    s.onload = () => resolve(html2canvas);
+    s.onerror = () => reject(new Error('加载 html2canvas 失败'));
+    document.head.appendChild(s);
+  });
+}
+
+async function exportConversationLongImage() {
+  const chat = chatArea;
+  if (!chat || !chat.querySelector('.message')) {
+    showToast('暂无对话内容可导出');
+    return;
+  }
+
+  let h2c;
+  try {
+    h2c = await loadHtml2CanvasLib();
+  } catch (e) {
+    showToast(String(e.message || e));
+    return;
+  }
+
+  showToast('正在生成长图…');
+
+  const appEl = document.getElementById('app');
+  const wrap = document.createElement('div');
+  wrap.id = 'chat-export-capture-root';
+  wrap.className = 'chat-export-capture-root';
+  wrap.setAttribute('aria-hidden', 'true');
+  const bgChat = getComputedStyle(chat).backgroundColor || '#f5f2ee';
+
+  wrap.style.cssText = [
+    'position:absolute',
+    'left:-9999px',
+    'top:0',
+    `width:${appEl.offsetWidth}px`,
+    'display:flex',
+    'flex-direction:column',
+    `background:${bgChat}`,
+    'box-sizing:border-box',
+  ].join(';');
+
+  const chatClone = chat.cloneNode(true);
+  stripCloneDom(chatClone);
+  const hasUserStart = trimExportChatCloneFromFirstRealUser(chatClone);
+  if (!hasUserStart || !chatClone.querySelector('.message')) {
+    showToast('暂无用户提问可导出');
+    return;
+  }
+
+  chatClone.style.flex = '0 0 auto';
+  chatClone.style.minHeight = '0';
+  chatClone.style.height = 'auto';
+  chatClone.style.overflow = 'visible';
+  chatClone.style.background = bgChat;
+  wrap.appendChild(chatClone);
+
+  const qrSrc = new URL('wechat-official-qrcode.png', window.location.href).href;
+  const footer = document.createElement('div');
+  footer.className = 'chat-export-qr-footer';
+  footer.style.cssText = [
+    'flex:0 0 auto',
+    'display:flex',
+    'flex-direction:column',
+    'align-items:center',
+    'justify-content:center',
+    'padding:20px 16px 28px',
+    `background:${bgChat}`,
+    'box-sizing:border-box',
+    'gap:12px',
+  ].join(';');
+  const qrImg = document.createElement('img');
+  qrImg.alt = '公众号二维码';
+  qrImg.src = qrSrc;
+  qrImg.width = 168;
+  qrImg.height = 168;
+  qrImg.style.cssText = 'width:168px;height:168px;object-fit:contain;display:block;border-radius:8px;';
+  const qrCaption = document.createElement('p');
+  qrCaption.textContent = '扫码关注公众号';
+  qrCaption.style.cssText =
+    'margin:0;font-size:14px;line-height:1.45;color:#5B4A3F;letter-spacing:0.02em;text-align:center;';
+  footer.appendChild(qrImg);
+  footer.appendChild(qrCaption);
+  wrap.appendChild(footer);
+
+  document.body.appendChild(wrap);
+
+  prepareDomForChatExport(wrap);
+
+  try {
+    await preloadExportQrImage(qrSrc);
+  } catch (e) {
+    document.body.removeChild(wrap);
+    showToast(String(e.message || e));
+    return;
+  }
+
+  await document.fonts.ready;
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  const maxPixels = 38000000;
+  let scale = Math.min(2, window.devicePixelRatio || 2);
+  const w = Math.max(1, wrap.offsetWidth);
+  const h = Math.max(1, wrap.scrollHeight);
+  while (w * h * scale * scale > maxPixels && scale > 0.45) scale -= 0.25;
+
+  const bgSolid =
+    getComputedStyle(wrap).backgroundColor && getComputedStyle(wrap).backgroundColor !== 'rgba(0, 0, 0, 0)'
+      ? getComputedStyle(wrap).backgroundColor
+      : bgChat;
+
+  let canvas;
+  try {
+    canvas = await h2c(wrap, {
+      scale,
+      useCORS: true,
+      allowTaint: false,
+      logging: false,
+      backgroundColor: bgSolid,
+      scrollX: 0,
+      scrollY: 0,
+      windowWidth: w,
+      windowHeight: h,
+      ignoreElements: (node) =>
+        node instanceof HTMLElement &&
+        (node.classList.contains('message-actions') ||
+          node.classList.contains('scroll-to-top-btn') ||
+          node.classList.contains('scroll-to-bottom-btn')),
+      onclone: (clonedDoc) => {
+        const cloneRoot =
+          clonedDoc.querySelector('.chat-export-capture-root') ||
+          clonedDoc.getElementById('chat-export-capture-root');
+        prepareDomForChatExport(cloneRoot);
+      },
+    });
+  } catch (err) {
+    document.body.removeChild(wrap);
+    console.error(err);
+    showToast('导出失败，对话过长时可尝试分段截图');
+    return;
+  }
+
+  document.body.removeChild(wrap);
+
+  const blob = await new Promise((resolve) => {
+    canvas.toBlob((b) => resolve(b), 'image/png', 1);
+  });
+  if (!blob) {
+    showToast('生成图片失败');
+    return;
+  }
+  const filename = buildExportImageFilename();
+  await saveImageBlobToAlbumOrDownload(blob, filename);
 }
 
 // ========== 显示Toast提示 ==========
@@ -3527,6 +5230,117 @@ async function copyLink() {
     copyTip.classList.add('show');
     setTimeout(() => copyTip.classList.remove('show'), 2000);
   }
+}
+
+/** 按界面顺序导出对话纯文本（含发言人），末尾附带当前页链接 */
+function buildConversationShareTextFromDom() {
+  const lines = [];
+  const subEl = document.getElementById('headerSubtitle');
+  const subtitle = subEl ? subEl.textContent.trim() : '';
+  lines.push('「光年之约圆桌会」对话摘录');
+  if (subtitle) lines.push(subtitle);
+  lines.push('──────────');
+  lines.push('');
+
+  if (!chatArea) return '';
+
+  for (const node of chatArea.children) {
+    if (!node || node.nodeType !== 1) continue;
+    if (node.id === 'typingMsg') continue;
+
+    if (node.classList.contains('system-notice')) {
+      const t = node.textContent.trim();
+      if (t) {
+        lines.push(`【系统】${t}`);
+        lines.push('');
+      }
+      continue;
+    }
+
+    if (node.classList.contains('message')) {
+      const bubble = node.querySelector('.message-bubble');
+      if (!bubble) continue;
+      const inner = bubble.innerText.trim();
+      if (!inner) continue;
+
+      let label = '嘉宾';
+      if (node.classList.contains('user')) {
+        label = '我';
+      } else {
+        const nameEl = node.querySelector('.message-name');
+        if (nameEl && nameEl.textContent.trim()) label = nameEl.textContent.trim();
+      }
+      lines.push(`【${label}】`);
+      lines.push(inner);
+      lines.push('');
+    }
+  }
+
+  lines.push('──────────');
+  lines.push(`页面链接：${window.location.href}`);
+  return lines.join('\n').trim();
+}
+
+/** 微信内置浏览器（无可靠 Web Share / 无公众号 JSSDK 时无法直接调起微信分享） */
+function isWeChatWebView() {
+  return /MicroMessenger/i.test(navigator.userAgent || '');
+}
+
+async function copyConversationShareTextToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+}
+
+/** 分享对话：生成带对话数据的链接，公众号样式面板（微信好友 / 朋友圈 / 复制） */
+async function shareConversationAsText() {
+  if (!chatArea || !chatArea.querySelector('.message')) {
+    showToast('暂无对话内容');
+    return;
+  }
+
+  showToast('正在生成分享链接…');
+
+  const payload = buildConversationSharePayloadFromDom();
+  if (!payload.items.length) {
+    showToast('暂无有效对话');
+    return;
+  }
+
+  const result = await buildShareableConversationUrlWithTrimming(payload);
+  if (!result.ok) {
+    if (result.reason === 'NO_COMPRESS') showToast('当前浏览器不支持压缩，请升级或用系统浏览器打开');
+    else if (result.reason === 'TOOLONG') showToast('对话过长，无法装入链接，请使用导出长图');
+    else showToast('生成分享链接失败');
+    return;
+  }
+
+  window.pendingConversationShareUrl = result.url;
+  const titleEl = document.getElementById('shareSheetTitle');
+  if (titleEl) titleEl.textContent = result.titlePreview || '光年之约圆桌会';
+
+  const linkEl = document.getElementById('shareSheetLinkPreview');
+  if (linkEl) {
+    linkEl.value = result.url;
+    linkEl.scrollLeft = 0;
+  }
+
+  openConversationShareSheet();
 }
 
 // ========== 暂停/恢复 ==========
@@ -3598,9 +5412,16 @@ function doRestart() {
   state.meetingEnded = false;
   state.allowExternalCelebrities = false;
   state.pendingExternalApproval = false;
+  state.pendingInviteCelebrityVerify = null;
+  state.pendingInviteReplaceOldKey = null;
   state.lastRejectedExternalNames = [];
-  resetHostedMeetingProgress();
+  state.hostedRound = 0;
+  state.awaitingEndConfirmation = false;
+  state.summaryReady = false;
   state.autoContinueRetries = 0;
+  state.stage3GuestAllowlistKeys = null;
+  state.stage3UnscopedCatchupUsed = false;
+  hostFlowResetLock();
   state.hostIntroShown = false;
   state.sessionId = Date.now().toString(36);
   state.removedCelebrities.clear(); // 清空删除黑名单
@@ -3649,13 +5470,52 @@ function doRestart() {
   messageInput.focus();
 }
 
-// ========== 历史会议存储 ==========
-const HISTORY_KEY = 'roundtable_history';
+// ========== 历史会议存储（按本机用户 ID 分桶，跨刷新保留） ==========
+const USER_ID_KEY = 'roundtable_user_id';
+/** 旧版无用户维度的单列表，仅用于一次性迁移到 v2 */
+const LEGACY_HISTORY_KEY = 'roundtable_history';
 const MAX_HISTORY = 50;
+
+/**
+ * 本机稳定匿名用户标识，用于多会议列表隔离；不替代服务端账号。
+ * 清站点数据/换设备后为新 ID。
+ */
+function getOrCreateUserId() {
+  try {
+    let id = localStorage.getItem(USER_ID_KEY);
+    if (id && typeof id === 'string' && id.length >= 4) return id;
+    id =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : 'u' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem(USER_ID_KEY, id);
+    return id;
+  } catch {
+    return 'roundtable_no_storage';
+  }
+}
+
+function getHistoryStorageKey() {
+  const uid = getOrCreateUserId();
+  if (uid === 'roundtable_no_storage') return LEGACY_HISTORY_KEY;
+  return 'roundtable_history_v2_' + uid;
+}
+
+function migrateHistoryIfNeeded() {
+  try {
+    const k = getHistoryStorageKey();
+    if (k === LEGACY_HISTORY_KEY) return;
+    if (localStorage.getItem(k)) return;
+    const leg = localStorage.getItem(LEGACY_HISTORY_KEY);
+    if (leg && leg.length > 2) localStorage.setItem(k, leg);
+  } catch (e) {
+    console.warn('[历史] 迁移旧列表失败', e);
+  }
+}
 
 function getHistory() {
   try {
-    return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    return JSON.parse(localStorage.getItem(getHistoryStorageKey()) || '[]');
   } catch {
     return [];
   }
@@ -3663,41 +5523,47 @@ function getHistory() {
 
 function saveHistory(list) {
   try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, MAX_HISTORY)));
+    localStorage.setItem(getHistoryStorageKey(), JSON.stringify(list.slice(0, MAX_HISTORY)));
   } catch (e) {
     // localStorage 满了，清理最旧的
     list.splice(MAX_HISTORY / 2);
-    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch {}
+    try { localStorage.setItem(getHistoryStorageKey(), JSON.stringify(list)); } catch {}
   }
 }
 
 function saveCurrentToHistory() {
-  // 过滤掉系统通知，只保留真正的对话消息
+  // 过滤：不落系统 role；用户侧不落编排层注入的 [系统通知]/[系统提示] 等，避免占列表且与详情“缺人话”不符
   const conversationMessages = state.messages.filter(msg => {
-    // 保留用户消息
-    if (msg.role === 'user' && !msg.content.startsWith('[系统通知]')) {
-      return true;
-    }
-    // 保留AI回复
-    if (msg.role === 'assistant') {
+    if (msg.role === 'system') return false;
+    if (msg.role === 'assistant') return true;
+    if (msg.role === 'user') {
+      if (!msg.content || !String(msg.content).trim()) return false;
+      if (isInternalOrchestratorUserLine(msg.content)) return false;
+      if (String(msg.content).trim().startsWith('[系统通知]')) return false;
       return true;
     }
     return false;
   });
-  
-  // 如果没有真正的对话内容，不保存
+
   if (conversationMessages.length === 0) return;
-  
-  // 至少要有一轮完整的对话（用户+AI）才保存
+
   const hasUserMessage = conversationMessages.some(m => m.role === 'user');
   const hasAIMessage = conversationMessages.some(m => m.role === 'assistant');
   if (!hasUserMessage || !hasAIMessage) return;
 
-  const firstUserMsg = conversationMessages.find(m => m.role === 'user');
-  const topic = firstUserMsg ? firstUserMsg.content.slice(0, 80) : '未命名会议';
+  const firstUserMsg = conversationMessages.find(
+    m => m.role === 'user' && m.content && String(m.content).trim()
+  );
+  const topic = firstUserMsg
+    ? String(firstUserMsg.content)
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80)
+    : '未命名会议';
 
   const session = {
     id: state.sessionId,
+    userId: getOrCreateUserId(),
     timestamp: Date.now(),
     topic,
     celebrities: [...state.selectedCelebrities],

@@ -3,18 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>光年圆桌会 - 管理后台</title>
-  <link rel="stylesheet" href="admin.css">
+  <title>光年之约圆桌会 - 管理后台</title>
+  <link rel="stylesheet" href="./admin.css">
 </head>
 <body>
   <!-- 引入 Supabase 工具函数 -->
-  <script src="config.js"></script>
-  <script src="supabase.js"></script>
+  <script src="./config.js"></script>
+  <script src="./supabase.js"></script>
   
   <!-- 登录层 -->
   <div id="loginLayer" class="login-layer">
     <div class="login-box">
-      <h2>光年圆桌会管理后台</h2>
+      <h2>光年之约圆桌会管理后台</h2>
       <p>请输入管理密码</p>
       <input type="password" id="pwdInput" placeholder="密码" autofocus>
       <button id="loginBtn">进入</button>
@@ -25,7 +25,7 @@
   <!-- 主内容 -->
   <div id="mainContent" class="main-content" style="display:none;">
     <header class="admin-header">
-      <h1>光年圆桌会 · 管理后台</h1>
+      <h1>光年之约圆桌会 · 管理后台</h1>
       <button class="refresh-btn" id="refreshBtn">刷新数据</button>
     </header>
 
@@ -83,8 +83,8 @@
     </section>
   </div>
 
-  <script src="config.js"></script>
-  <script src="supabase.js"></script>
+  <script src="./config.js"></script>
+  <script src="./supabase.js"></script>
   <script>
     // ========== 配置 ==========
     const ADMIN_PASSWORD = 'fengling2026';
