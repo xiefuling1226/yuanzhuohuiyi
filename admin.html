@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>光年之约圆桌会 - 管理后台</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <!-- 引入 Supabase 工具函数 -->
+  <script src="config.js"></script>
+  <script src="supabase.js"></script>
+  
+  <!-- 登录层 -->
+  <div id="loginLayer" class="login-layer">
+    <div class="login-box">
+      <h2>光年之约圆桌会管理后台</h2>
+      <p>请输入管理密码</p>
+      <input type="password" id="pwdInput" placeholder="密码" autofocus>
+      <button id="loginBtn">进入</button>
+      <div class="login-error" id="loginError">密码错误</div>
+    </div>
+  </div>
+
+  <!-- 主内容 -->
+  <div id="mainContent" class="main-content" style="display:none;">
+    <header class="admin-header">
+      <h1>光年之约圆桌会 · 管理后台</h1>
+      <button class="refresh-btn" id="refreshBtn">刷新数据</button>
+    </header>
+
+    <!-- 统计卡片 -->
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-number" id="todayVisits">-</div>
+        <div class="stat-label">今日访问</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" id="totalVisits">-</div>
+        <div class="stat-label">总访问量</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" id="todayMessages">-</div>
+        <div class="stat-label">今日对话</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" id="totalMessages">-</div>
+        <div class="stat-label">总对话数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" id="totalSessions">-</div>
+        <div class="stat-label">总会议数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-number" id="avgDuration">-</div>
+        <div class="stat-label">平均时长(分)</div>
+      </div>
+    </section>
+
+    <!-- 7天趋势 -->
+    <section class="chart-section">
+      <h2>最近7天访问趋势</h2>
+      <div class="chart-container" id="chartContainer"></div>
+    </section>
+
+    <!-- 筛选栏 -->
+    <section class="filter-bar">
+      <h2>会议记录</h2>
+      <div class="filter-controls">
+        <select id="dateFilter">
+          <option value="today">今天</option>
+          <option value="7days" selected>最近7天</option>
+          <option value="30days">最近30天</option>
+          <option value="all">全部</option>
+        </select>
+        <button class="delete-all-btn" id="deleteAllBtn">清空所有记录</button>
+      </div>
+    </section>
+
+    <!-- 对话列表 -->
+    <section class="sessions-list" id="sessionsList">
+      <div class="loading">加载中...</div>
+    </section>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="supabase.js"></script>
+  <script>
+    // ========== 配置 ==========
+    const ADMIN_PASSWORD = 'fengling2026';
+
+    // ========== 登录 ==========
+    const loginLayer = document.getElementById('loginLayer');
+    const mainContent = document.getElementById('mainContent');
+    const pwdInput = document.getElementById('pwdInput');
+    const loginBtn = document.getElementById('loginBtn');
+    const loginError = document.getElementById('loginError');
+
+    if (sessionStorage.getItem('rt_admin_logged') === '1') {
+      loginLayer.style.display = 'none';
+      mainContent.style.display = 'block';
+      loadDashboard();
+    }
+
+    loginBtn.addEventListener('click', doLogin);
+    pwdInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doLogin();
+    });
+
+    function doLogin() {
+      if (pwdInput.value === ADMIN_PASSWORD) {
+        sessionStorage.setItem('rt_admin_logged', '1');
+        loginLayer.style.display = 'none';
+        mainContent.style.display = 'block';
+        loadDashboard();
+      } else {
+        loginError.style.opacity = '1';
+        setTimeout(() => loginError.style.opacity = '0', 2000);
+      }
+    }
+
+    // ========== 数据加载 ==========
+    document.getElementById('refreshBtn').addEventListener('click', loadDashboard);
+    document.getElementById('dateFilter').addEventListener('change', loadSessions);
+
+    async function loadDashboard() {
+      await Promise.all([loadStats(), loadChart(), loadSessions()]);
+    }
+
+    // ========== 统计数据 ==========
+    async function loadStats() {
+      const today = new Date().toISOString().slice(0, 10);
+
+      const [allVisits, todayVisitsData, allMessages, todayMessagesData] = await Promise.all([
+        supabaseSelect('roundtable_visits', 'select=id'),
+        supabaseSelect('roundtable_visits', `select=id&created_at=gte.${today}T00:00:00`),
+        supabaseSelect('roundtable_messages', 'select=*&role=eq.user'),
+        supabaseSelect('roundtable_messages', `select=*&role=eq.user&created_at=gte.${today}T00:00:00`),
+      ]);
+
+      document.getElementById('totalVisits').textContent = allVisits.length || 0;
+      document.getElementById('todayVisits').textContent = todayVisitsData.length || 0;
+      document.getElementById('totalMessages').textContent = allMessages.length || 0;
+      document.getElementById('todayMessages').textContent = todayMessagesData.length || 0;
+      
+      // 计算会议数量和平均时长
+      const allMessagesForSessions = await supabaseSelect('roundtable_messages', 'select=session_id,created_at');
+      const sessions = {};
+      allMessagesForSessions.forEach(msg => {
+        if (!sessions[msg.session_id]) sessions[msg.session_id] = [];
+        sessions[msg.session_id].push(msg);
+      });
+      
+      const totalSessions = Object.keys(sessions).length;
+      document.getElementById('totalSessions').textContent = totalSessions || 0;
+      
+      // 计算平均时长
+      let totalDuration = 0;
+      let sessionCount = 0;
+      Object.values(sessions).forEach(msgs => {
+        if (msgs.length >= 2) {
+          const firstTime = new Date(msgs[0].created_at);
+          const lastTime = new Date(msgs[msgs.length - 1].created_at);
+          const duration = (lastTime - firstTime) / 60000; // 分钟
+          totalDuration += duration;
+          sessionCount++;
+        }
+      });
+      
+      const avgDuration = sessionCount > 0 ? Math.round(totalDuration / sessionCount) : 0;
+      document.getElementById('avgDuration').textContent = avgDuration;
+    }
+
+    // ========== 7天趋势图 ==========
+    async function loadChart() {
+      const days = [];
+      const counts = [];
+
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        const dateStr = d.toISOString().slice(0, 10);
+        days.push(dateStr.slice(5));
+
+        const nextDay = new Date(d);
+        nextDay.setDate(nextDay.getDate() + 1);
+        const nextStr = nextDay.toISOString().slice(0, 10);
+
+        const data = await supabaseSelect('roundtable_visits', `select=id&created_at=gte.${dateStr}T00:00:00&created_at=lt.${nextStr}T00:00:00`);
+        counts.push(data.length || 0);
+      }
+
+      renderChart(days, counts);
+    }
+
+    function renderChart(labels, data) {
+      const container = document.getElementById('chartContainer');
+      const maxVal = Math.max(...data, 1);
+
+      let html = '<div class="chart">';
+      for (let i = 0; i < labels.length; i++) {
+        const height = Math.max((data[i] / maxVal) * 140, 4);
+        html += `
+          <div class="chart-bar-group">
+            <div class="chart-value">${data[i]}</div>
+            <div class="chart-bar" style="height:${height}px"></div>
+            <div class="chart-label">${labels[i]}</div>
+          </div>
+        `;
+      }
+      html += '</div>';
+      container.innerHTML = html;
+    }
+
+    // ========== 对话记录 ==========
+    async function loadSessions() {
+      const filter = document.getElementById('dateFilter').value;
+      const listEl = document.getElementById('sessionsList');
+      listEl.innerHTML = '<div class="loading">加载中...</div>';
+
+      let dateQuery = '';
+      if (filter === 'today') {
+        const today = new Date().toISOString().slice(0, 10);
+        dateQuery = `&created_at=gte.${today}T00:00:00`;
+      } else if (filter === '7days') {
+        const d = new Date(); d.setDate(d.getDate() - 7);
+        dateQuery = `&created_at=gte.${d.toISOString()}`;
+      } else if (filter === '30days') {
+        const d = new Date(); d.setDate(d.getDate() - 30);
+        dateQuery = `&created_at=gte.${d.toISOString()}`;
+      }
+
+      // 同时获取访问记录和消息记录
+      const [messages, visits] = await Promise.all([
+        supabaseSelect('roundtable_messages', `select=*&order=created_at.asc${dateQuery}`),
+        supabaseSelect('roundtable_visits', `select=session_id,country,region,city${dateQuery}`),
+      ]);
+      
+      // 创建 session_id 到用户信息的映射
+      const visitMap = {};
+      visits.forEach(v => {
+        visitMap[v.session_id] = {
+          country: v.country || '未知',
+          region: v.region || '未知',
+          city: v.city || '未知',
+        };
+      });
+
+      if (!messages.length) {
+        listEl.innerHTML = '<div class="empty">暂无会议记录</div>';
+        return;
+      }
+
+      // 按 session_id 分组
+      const sessions = {};
+      messages.forEach(msg => {
+        if (!sessions[msg.session_id]) sessions[msg.session_id] = [];
+        sessions[msg.session_id].push(msg);
+      });
+
+      const sortedSessions = Object.entries(sessions).sort((a, b) => {
+        const timeA = new Date(a[1][a[1].length - 1].created_at);
+        const timeB = new Date(b[1][b[1].length - 1].created_at);
+        return timeB - timeA;
+      });
+
+      let html = '';
+      sortedSessions.forEach(([sid, msgs]) => {
+        const firstTime = new Date(msgs[0].created_at);
+        const lastTime = new Date(msgs[msgs.length - 1].created_at);
+        const timeStr = firstTime.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        const duration = Math.round((lastTime - firstTime) / 60000); // 分钟
+        
+        const userMsgCount = msgs.filter(m => m.role === 'user').length;
+        const aiMsgCount = msgs.filter(m => m.role === 'assistant').length;
+        const systemMsgCount = msgs.filter(m => m.role === 'system').length;
+        const displayMsgCount = msgs.length - systemMsgCount; // 显示的消息数（排除系统消息）
+        
+        // 提取嘉宾列表（从消息中的 celebrities 字段）
+        const celebritiesSet = new Set();
+        msgs.forEach(msg => {
+          if (msg.celebrities) {
+            msg.celebrities.split(',').forEach(name => {
+              if (name.trim()) celebritiesSet.add(name.trim());
+            });
+          }
+        });
+        const guestList = Array.from(celebritiesSet).join('、') || '未指定';
+        
+        // 提取第一个用户消息作为主题
+        const firstUserMsg = msgs.find(m => m.role === 'user');
+        const topic = firstUserMsg ? (firstUserMsg.content.length > 50 ? firstUserMsg.content.slice(0, 50) + '...' : firstUserMsg.content) : '未命名会议';
+        
+        // 获取用户地区信息
+        const userInfo = visitMap[sid];
+        let locationStr;
+        if (userInfo && (userInfo.country !== '未知' || userInfo.region !== '未知' || userInfo.city !== '未知')) {
+          locationStr = `${userInfo.country} ${userInfo.region} ${userInfo.city}`;
+        } else {
+          // 没有地区信息时，显示更友好的提示
+          locationStr = '🌐 未知地区';
+        }
+
+        html += `
+          <div class="session-card" data-session-id="${sid}">
+            <div class="session-header">
+              <div class="session-title">${escapeHtml(topic)}</div>
+              <div class="session-actions">
+                <button class="session-delete-btn" data-session-id="${sid}" title="删除此会议">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="session-meta-info">
+              <span class="session-time">🕐 ${timeStr}</span>
+              <span class="session-duration">⏱ ${duration}分钟</span>
+              <span class="session-location">🌍 ${locationStr}</span>
+            </div>
+            <div class="session-guests-display">👥 ${guestList}</div>
+            <div class="session-stats">
+              <span class="stat-badge user-badge">${userMsgCount} 用户消息</span>
+              <span class="stat-badge ai-badge">${aiMsgCount} AI回复</span>
+              <span class="stat-badge total-badge">共 ${displayMsgCount} 条</span>
+            </div>
+            <div class="expand-hint" data-session-id="${sid}">👆 点击展开查看 ${displayMsgCount} 条对话详情</div>
+            <div class="session-messages">`;
+
+        msgs.forEach(msg => {
+          // 跳过系统消息（仅用于记录嘉宾信息）
+          if (msg.role === 'system') return;
+          
+          const label = msg.speaker || msg.role;
+          const roleClass = msg.role === 'user' ? 'msg-user' : 'msg-assistant';
+          const content = msg.content.length > 500 ? msg.content.slice(0, 500) + '...' : msg.content;
+          html += `<div class="session-msg ${roleClass}" data-msg-id="${msg.id}">
+            <button class="session-msg-delete" data-msg-id="${msg.id}" title="删除此条消息">×</button>
+            <strong>${escapeHtml(label)}：</strong>${escapeHtml(content)}
+          </div>`;
+        });
+
+        html += `</div></div>`;
+      });
+
+      listEl.innerHTML = html;
+      
+      // 绑定展开/收起
+      listEl.querySelectorAll('.expand-hint').forEach(hint => {
+        hint.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const sessionId = hint.dataset.sessionId;
+          const card = listEl.querySelector(`.session-card[data-session-id="${sessionId}"]`);
+          const isExpanded = card.classList.contains('expanded');
+          
+          if (isExpanded) {
+            card.classList.remove('expanded');
+            hint.textContent = `👆 点击展开查看对话详情`;
+          } else {
+            card.classList.add('expanded');
+            const msgCount = card.querySelectorAll('.session-msg').length;
+            hint.textContent = `👆 点击收起对话详情`;
+          }
+        });
+      });
+      
+      // 绑定删除会议按钮
+      listEl.querySelectorAll('.session-delete-btn').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const sessionId = btn.dataset.sessionId;
+          if (confirm(`确定要删除这个会议记录吗？\n\n此操作不可恢复。`)) {
+            await deleteSession(sessionId);
+          }
+        });
+      });
+      
+      // 绑定删除单条消息按钮
+      listEl.querySelectorAll('.session-msg-delete').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const msgId = btn.dataset.msgId;
+          if (confirm(`确定要删除这条消息吗？`)) {
+            await deleteSingleMessage(msgId);
+          }
+        });
+      });
+    }
+    
+    // ========== 删除单个会议 ==========
+    async function deleteSession(sessionId) {
+      try {
+        console.log('开始删除会议:', sessionId);
+        const success = await supabaseDelete('roundtable_messages', `session_id=eq.${sessionId}`);
+        console.log('删除结果:', success);
+        
+        if (!success) {
+          throw new Error('删除失败，请检查数据库权限设置');
+        }
+        
+        alert('删除成功！');
+        loadSessions(); // 重新加载
+      } catch (err) {
+        console.error('删除错误:', err);
+        alert('删除失败：' + err.message);
+      }
+    }
+    
+    // ========== 删除单条消息 ==========
+    async function deleteSingleMessage(msgId) {
+      try {
+        const success = await supabaseDelete('roundtable_messages', `id=eq.${msgId}`);
+        if (!success) throw new Error('删除失败');
+        
+        // 从DOM中移除
+        const msgEl = document.querySelector(`.session-msg[data-msg-id="${msgId}"]`);
+        if (msgEl) {
+          msgEl.remove();
+        }
+        
+        // 更新统计
+        loadSessions();
+      } catch (err) {
+        alert('删除失败：' + err.message);
+      }
+    }
+    
+    // ========== 清空所有记录 ==========
+    document.getElementById('deleteAllBtn').addEventListener('click', async () => {
+      if (confirm('⚠️ 确定要清空所有会议记录吗？\n\n此操作不可恢复！')) {
+        try {
+          const success = await supabaseDelete('roundtable_messages', 'id=gt.0');
+          if (!success) throw new Error('清空失败');
+          alert('已清空所有记录！');
+          loadDashboard(); // 重新加载所有数据
+        } catch (err) {
+          alert('清空失败：' + err.message);
+        }
+      }
+    });
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>
