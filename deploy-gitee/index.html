@@ -201,7 +201,7 @@
           <img src="./logo.png" alt="" class="share-sheet-thumb" width="52" height="52">
           <div class="share-sheet-preview-text">
             <div class="share-sheet-title" id="shareSheetTitle">光年之约圆桌会</div>
-            <p class="share-sheet-desc">好友打开链接即可在页面内查看气泡对话（无需在同一设备）</p>
+            <p class="share-sheet-desc">生成短链接（需配置 Supabase 时）；好友打开后与导出长图所见范围一致（含底部公众号码）。可选择发送给朋友或分享到朋友圈。</p>
           </div>
         </div>
         <div class="share-sheet-link-row">
@@ -224,7 +224,7 @@
           </button>
           <button type="button" class="share-sheet-copy-btn" id="shareSheetCopyBtn">复制链接</button>
         </div>
-        <p class="share-sheet-footnote">普通网页无法直达朋友圈编辑框或调用公众号同款分享面板；此处会先复制文案并尝试唤起微信 App（在微信内打开本页时仅复制）。若接入认证服务号并在后台配置 JS 安全域名，可再升级为网页内一键分享卡片。</p>
+        <p class="share-sheet-footnote">未配置密钥时仍会生成长哈希链接（可分享）。微信内网页无法代替 App 原生分享面板；此处会复制文案并可选系统分享或打开微信粘贴。接入认证服务号并配置 JS 安全域名后可升级为网页内卡片分享。</p>
       </div>
     </div>
 

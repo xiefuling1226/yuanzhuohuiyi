@@ -1298,7 +1298,7 @@ async function saveImageBlobToAlbumOrDownload(blob, filename) {
         files: [file],
         title: filename.replace(/\.png$/i, ''),
       });
-      showToast('长图已保存');
+      showToast('图片已保存到相册');
       return;
     }
   } catch (e) {
@@ -1313,7 +1313,7 @@ async function saveImageBlobToAlbumOrDownload(blob, filename) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  showToast('长图已下载');
+  showToast('图片已下载到本地');
 }
 
 function getRecommendationReason(rawContent, key) {
@@ -1841,14 +1841,9 @@ function bindEvents() {
       if (e.target === conversationShareSheetModalEl) closeConversationShareSheet();
     });
   }
-  const shareTitleForNative = () =>
-    (document.getElementById('shareSheetTitle')?.textContent || '光年之约圆桌会').trim();
-  const shareDescForNative = () => '光年之约圆桌会 · 点此链接查看完整对话';
-
   if (shareSheetFriendBtn) {
     shareSheetFriendBtn.addEventListener('click', async () => {
-      const title = shareTitleForNative();
-      const shared = await sharePendingUrlViaNativeIfPossible(title, shareDescForNative());
+      const shared = await sharePendingUrlViaNativeIfPossible('friend');
       if (shared) {
         closeConversationShareSheet();
         return;
@@ -1859,8 +1854,7 @@ function bindEvents() {
   }
   if (shareSheetMomentBtn) {
     shareSheetMomentBtn.addEventListener('click', async () => {
-      const title = shareTitleForNative();
-      const shared = await sharePendingUrlViaNativeIfPossible(title + ' · 圆桌对话', shareDescForNative());
+      const shared = await sharePendingUrlViaNativeIfPossible('moment');
       if (shared) {
         closeConversationShareSheet();
         return;
@@ -4783,6 +4777,162 @@ function buildConversationSharePayloadFromDom() {
   };
 }
 
+/** 与导出长图一致：从首条真实用户提问起保留内容，去掉此前的系统提示与编排占位 */
+function trimSharePayloadItemsLikeExport(items) {
+  const list = Array.isArray(items) ? items : [];
+  let started = false;
+  const out = [];
+  for (const it of list) {
+    if (!started) {
+      if (it.m === 'sy') continue;
+      if (it.m === 'us') {
+        const inner = String(it.c || '').trim();
+        if (!inner || isInternalOrchestratorUserLine(inner)) continue;
+        started = true;
+        out.push(it);
+        continue;
+      }
+      if (it.m === 'as') continue;
+      continue;
+    }
+    out.push(it);
+  }
+  let title = '';
+  const firstRealUser = out.find((x) => x.m === 'us');
+  if (firstRealUser && firstRealUser.c) {
+    let tt = String(firstRealUser.c).trim().replace(/^用户原话[：:]\s*/i, '').trim();
+    title = tt.slice(0, 56);
+  }
+  return { items: out, title: title || '光年之约圆桌会' };
+}
+
+function generateShareSlug() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = new Uint8Array(10);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  let s = '';
+  for (let i = 0; i < 10; i++) s += chars[bytes[i] % chars.length];
+  return s;
+}
+
+/** 将 gzip 片段存入 Supabase，返回短链 URL（失败则调用方回退哈希链接） */
+async function persistShareFragAsShortLink(frag) {
+  const base = `${location.origin}${location.pathname}`;
+  if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey || !frag) {
+    return { ok: false };
+  }
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const slug = generateShareSlug();
+    try {
+      const res = await fetch(`${CONFIG.supabaseUrl}/rest/v1/roundtable_share_links`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          apikey: CONFIG.supabaseKey,
+          Authorization: `Bearer ${CONFIG.supabaseKey}`,
+          Prefer: 'return=minimal',
+        },
+        body: JSON.stringify({ slug, frag }),
+      });
+      if (res.ok) {
+        const sep = base.includes('?') ? '&' : '?';
+        return { ok: true, url: `${base}${sep}s=${slug}` };
+      }
+      if (res.status !== 409) {
+        console.warn('[share] short link insert failed', res.status);
+        break;
+      }
+    } catch (e) {
+      console.warn('[share] short link insert', e);
+      break;
+    }
+  }
+  return { ok: false };
+}
+
+async function fetchSharePayloadFragBySlug(slug) {
+  if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey || !slug) return '';
+  try {
+    const res = await fetch(
+      `${CONFIG.supabaseUrl}/rest/v1/roundtable_share_links?slug=eq.${encodeURIComponent(slug)}&select=frag&limit=1`,
+      {
+        headers: {
+          apikey: CONFIG.supabaseKey,
+          Authorization: `Bearer ${CONFIG.supabaseKey}`,
+        },
+      }
+    );
+    if (!res.ok) return '';
+    const rows = await res.json();
+    return rows && rows[0] && rows[0].frag ? rows[0].frag : '';
+  } catch (e) {
+    console.warn('[share] fetch slug', e);
+    return '';
+  }
+}
+
+function extractShareSlugFromLocation() {
+  try {
+    const q = new URLSearchParams(location.search).get('s');
+    if (q && /^[a-z0-9]{10}$/.test(q.trim().toLowerCase())) return q.trim().toLowerCase();
+  } catch (_) {}
+  return '';
+}
+
+function stripShareParamsFromUrlBar() {
+  try {
+    const params = new URLSearchParams(location.search);
+    params.delete('s');
+    params.delete('share');
+    const qs = params.toString();
+    let hash = location.hash || '';
+    if (hash.startsWith('#share=')) hash = '';
+    history.replaceState(null, '', location.pathname + (qs ? `?${qs}` : '') + hash);
+  } catch (_) {
+    history.replaceState(null, '', location.pathname);
+  }
+}
+
+function appendShareViewQrFooter() {
+  if (!chatArea) return;
+  if (chatArea.querySelector('[data-share-export-footer="1"]')) return;
+  const bgChat = getComputedStyle(chatArea).backgroundColor || '#f5f2ee';
+  const footer = document.createElement('div');
+  footer.className = 'chat-export-qr-footer';
+  footer.dataset.shareExportFooter = '1';
+  footer.style.cssText = [
+    'flex-shrink:0',
+    'display:flex',
+    'flex-direction:column',
+    'align-items:center',
+    'justify-content:center',
+    'padding:20px 16px 28px',
+    `background:${bgChat}`,
+    'box-sizing:border-box',
+    'gap:12px',
+  ].join(';');
+  const qrSrc = new URL('wechat-official-qrcode.png', window.location.href).href;
+  const qrImg = document.createElement('img');
+  qrImg.alt = '公众号二维码';
+  qrImg.src = qrSrc;
+  qrImg.width = 168;
+  qrImg.height = 168;
+  qrImg.loading = 'lazy';
+  qrImg.decoding = 'async';
+  qrImg.style.cssText = 'width:168px;height:168px;object-fit:contain;display:block;border-radius:8px;';
+  const qrCaption = document.createElement('p');
+  qrCaption.textContent = '扫码关注公众号';
+  qrCaption.style.cssText =
+    'margin:0;font-size:14px;line-height:1.45;color:#5B4A3F;letter-spacing:0.02em;text-align:center;';
+  footer.appendChild(qrImg);
+  footer.appendChild(qrCaption);
+  chatArea.appendChild(footer);
+}
+
 async function buildShareableConversationUrlWithTrimming(payload) {
   let p = { v: payload.v, title: payload.title, items: [...payload.items] };
   const base = `${location.origin}${location.pathname}`;
@@ -4792,6 +4942,10 @@ async function buildShareableConversationUrlWithTrimming(payload) {
   for (;;) {
     try {
       const frag = await gzipJsonToBase64Url(p);
+      const short = await persistShareFragAsShortLink(frag);
+      if (short.ok && short.url && short.url.length <= SHARE_URL_MAX_LEN) {
+        return { ok: true, url: short.url, titlePreview: p.title };
+      }
       const url = `${base}#share=v1.${frag}`;
       if (url.length <= SHARE_URL_MAX_LEN) {
         return { ok: true, url, titlePreview: p.title };
@@ -4820,11 +4974,22 @@ function insertShareViewBanner() {
 }
 
 async function tryHydrateShareFromUrl() {
-  const raw = extractSharePayloadRawFromLocation();
+  const slug = extractShareSlugFromLocation();
+  let raw = '';
+  if (slug) {
+    raw = await fetchSharePayloadFragBySlug(slug);
+    if (!raw) {
+      stripShareParamsFromUrlBar();
+      showToast('分享链接无效或已失效');
+      return false;
+    }
+  } else {
+    raw = extractSharePayloadRawFromLocation();
+  }
   if (!raw) return false;
 
   if (typeof DecompressionStream === 'undefined') {
-    history.replaceState(null, '', location.pathname + location.search);
+    stripShareParamsFromUrlBar();
     showToast('当前浏览器无法还原分享内容，请升级系统浏览器后再试');
     return false;
   }
@@ -4834,13 +4999,13 @@ async function tryHydrateShareFromUrl() {
     data = await gunzipBase64UrlToJson(raw);
   } catch (e) {
     console.warn(e);
-    history.replaceState(null, '', location.pathname + location.search);
+    stripShareParamsFromUrlBar();
     showToast('分享链接无效或已损坏');
     return false;
   }
 
   if (!data || data.v !== SHARE_PAYLOAD_VER || !Array.isArray(data.items)) {
-    history.replaceState(null, '', location.pathname + location.search);
+    stripShareParamsFromUrlBar();
     showToast('分享链接格式不正确');
     return false;
   }
@@ -4865,8 +5030,9 @@ async function tryHydrateShareFromUrl() {
   if (inputArea) inputArea.style.display = 'none';
 
   insertShareViewBanner();
+  appendShareViewQrFooter();
 
-  history.replaceState(null, '', location.pathname + location.search);
+  stripShareParamsFromUrlBar();
 
   scrollToBottom(true);
 
@@ -4922,9 +5088,9 @@ async function copyRichPendingShareAndToast(mode) {
   const title = (document.getElementById('shareSheetTitle')?.textContent || '光年之约圆桌会').trim();
   let clip;
   if (mode === 'friend') {
-    clip = `${title}\n光年之约圆桌会 · 点此链接查看完整对话\n${url}`;
+    clip = `${title}\n光年之约圆桌会 · 打开链接查看完整气泡对话（与导出长图一致）\n${url}`;
   } else {
-    clip = `${title} · 圆桌对话\n${url}`;
+    clip = `${title} · 圆桌对话\n打开链接查看完整气泡对话（与导出长图一致）\n${url}`;
   }
   const ok = await copyConversationShareTextToClipboard(clip);
   if (!ok) {
@@ -4947,13 +5113,18 @@ async function copyRichPendingShareAndToast(mode) {
   }
 }
 
-async function sharePendingUrlViaNativeIfPossible(title, text) {
+async function sharePendingUrlViaNativeIfPossible(mode) {
   const url = window.pendingConversationShareUrl || '';
   if (!url) return false;
   if (isWeChatWebView()) return false;
   if (!navigator.share || typeof navigator.share !== 'function') return false;
+  const title = (document.getElementById('shareSheetTitle')?.textContent || '光年之约圆桌会').trim();
+  const text =
+    mode === 'moment'
+      ? `${title} · 圆桌对话\n打开链接查看完整气泡对话（与导出长图一致）`
+      : `${title}\n光年之约圆桌会 · 打开链接查看完整气泡对话（与导出长图一致）`;
   try {
-    await navigator.share({ title, text: text || title, url });
+    await navigator.share({ title, text, url });
     return true;
   } catch (e) {
     return false;
@@ -5033,6 +5204,46 @@ function loadHtml2CanvasLib() {
   });
 }
 
+let exportLongImageProgressMount = null;
+
+function showExportLongImageProgress(text) {
+  hideExportLongImageProgress();
+  const root = document.createElement('div');
+  root.id = 'export-long-image-progress-root';
+  root.className = 'export-long-image-progress';
+  root.setAttribute('role', 'status');
+  root.setAttribute('aria-live', 'polite');
+  const inner = document.createElement('div');
+  inner.className = 'export-long-image-progress-inner';
+  const spin = document.createElement('div');
+  spin.className = 'export-long-image-spinner';
+  spin.setAttribute('aria-hidden', 'true');
+  const p = document.createElement('p');
+  p.className = 'export-long-image-progress-text';
+  p.textContent = text || '正在生成长图…';
+  inner.appendChild(spin);
+  inner.appendChild(p);
+  root.appendChild(inner);
+  document.body.appendChild(root);
+  exportLongImageProgressMount = root;
+}
+
+function setExportLongImageProgress(text) {
+  if (!exportLongImageProgressMount) return;
+  const p = exportLongImageProgressMount.querySelector('.export-long-image-progress-text');
+  if (p) p.textContent = text;
+}
+
+function hideExportLongImageProgress() {
+  if (exportLongImageProgressMount) {
+    exportLongImageProgressMount.remove();
+    exportLongImageProgressMount = null;
+  } else {
+    const o = document.getElementById('export-long-image-progress-root');
+    if (o) o.remove();
+  }
+}
+
 async function exportConversationLongImage() {
   const chat = chatArea;
   if (!chat || !chat.querySelector('.message')) {
@@ -5040,145 +5251,158 @@ async function exportConversationLongImage() {
     return;
   }
 
+  showExportLongImageProgress('加载导出组件…');
+
   let h2c;
   try {
     h2c = await loadHtml2CanvasLib();
   } catch (e) {
+    hideExportLongImageProgress();
     showToast(String(e.message || e));
     return;
   }
 
-  showToast('正在生成长图…');
-
-  const appEl = document.getElementById('app');
-  const wrap = document.createElement('div');
-  wrap.id = 'chat-export-capture-root';
-  wrap.className = 'chat-export-capture-root';
-  wrap.setAttribute('aria-hidden', 'true');
-  const bgChat = getComputedStyle(chat).backgroundColor || '#f5f2ee';
-
-  wrap.style.cssText = [
-    'position:absolute',
-    'left:-9999px',
-    'top:0',
-    `width:${appEl.offsetWidth}px`,
-    'display:flex',
-    'flex-direction:column',
-    `background:${bgChat}`,
-    'box-sizing:border-box',
-  ].join(';');
-
-  const chatClone = chat.cloneNode(true);
-  stripCloneDom(chatClone);
-  const hasUserStart = trimExportChatCloneFromFirstRealUser(chatClone);
-  if (!hasUserStart || !chatClone.querySelector('.message')) {
-    showToast('暂无用户提问可导出');
-    return;
-  }
-
-  chatClone.style.flex = '0 0 auto';
-  chatClone.style.minHeight = '0';
-  chatClone.style.height = 'auto';
-  chatClone.style.overflow = 'visible';
-  chatClone.style.background = bgChat;
-  wrap.appendChild(chatClone);
-
-  const qrSrc = new URL('wechat-official-qrcode.png', window.location.href).href;
-  const footer = document.createElement('div');
-  footer.className = 'chat-export-qr-footer';
-  footer.style.cssText = [
-    'flex:0 0 auto',
-    'display:flex',
-    'flex-direction:column',
-    'align-items:center',
-    'justify-content:center',
-    'padding:20px 16px 28px',
-    `background:${bgChat}`,
-    'box-sizing:border-box',
-    'gap:12px',
-  ].join(';');
-  const qrImg = document.createElement('img');
-  qrImg.alt = '公众号二维码';
-  qrImg.src = qrSrc;
-  qrImg.width = 168;
-  qrImg.height = 168;
-  qrImg.style.cssText = 'width:168px;height:168px;object-fit:contain;display:block;border-radius:8px;';
-  const qrCaption = document.createElement('p');
-  qrCaption.textContent = '扫码关注公众号';
-  qrCaption.style.cssText =
-    'margin:0;font-size:14px;line-height:1.45;color:#5B4A3F;letter-spacing:0.02em;text-align:center;';
-  footer.appendChild(qrImg);
-  footer.appendChild(qrCaption);
-  wrap.appendChild(footer);
-
-  document.body.appendChild(wrap);
-
-  prepareDomForChatExport(wrap);
-
   try {
-    await preloadExportQrImage(qrSrc);
-  } catch (e) {
+    setExportLongImageProgress('准备对话内容…');
+
+    const appEl = document.getElementById('app');
+    const wrap = document.createElement('div');
+    wrap.id = 'chat-export-capture-root';
+    wrap.className = 'chat-export-capture-root';
+    wrap.setAttribute('aria-hidden', 'true');
+    const bgChat = getComputedStyle(chat).backgroundColor || '#f5f2ee';
+
+    wrap.style.cssText = [
+      'position:absolute',
+      'left:-9999px',
+      'top:0',
+      `width:${appEl.offsetWidth}px`,
+      'display:flex',
+      'flex-direction:column',
+      `background:${bgChat}`,
+      'box-sizing:border-box',
+    ].join(';');
+
+    const chatClone = chat.cloneNode(true);
+    stripCloneDom(chatClone);
+    const hasUserStart = trimExportChatCloneFromFirstRealUser(chatClone);
+    if (!hasUserStart || !chatClone.querySelector('.message')) {
+      showToast('暂无用户提问可导出');
+      return;
+    }
+
+    chatClone.style.flex = '0 0 auto';
+    chatClone.style.minHeight = '0';
+    chatClone.style.height = 'auto';
+    chatClone.style.overflow = 'visible';
+    chatClone.style.background = bgChat;
+    wrap.appendChild(chatClone);
+
+    const qrSrc = new URL('wechat-official-qrcode.png', window.location.href).href;
+    const footer = document.createElement('div');
+    footer.className = 'chat-export-qr-footer';
+    footer.style.cssText = [
+      'flex:0 0 auto',
+      'display:flex',
+      'flex-direction:column',
+      'align-items:center',
+      'justify-content:center',
+      'padding:20px 16px 28px',
+      `background:${bgChat}`,
+      'box-sizing:border-box',
+      'gap:12px',
+    ].join(';');
+    const qrImg = document.createElement('img');
+    qrImg.alt = '公众号二维码';
+    qrImg.src = qrSrc;
+    qrImg.width = 168;
+    qrImg.height = 168;
+    qrImg.style.cssText = 'width:168px;height:168px;object-fit:contain;display:block;border-radius:8px;';
+    const qrCaption = document.createElement('p');
+    qrCaption.textContent = '扫码关注公众号';
+    qrCaption.style.cssText =
+      'margin:0;font-size:14px;line-height:1.45;color:#5B4A3F;letter-spacing:0.02em;text-align:center;';
+    footer.appendChild(qrImg);
+    footer.appendChild(qrCaption);
+    wrap.appendChild(footer);
+
+    document.body.appendChild(wrap);
+
+    prepareDomForChatExport(wrap);
+
+    setExportLongImageProgress('加载二维码…');
+    try {
+      await preloadExportQrImage(qrSrc);
+    } catch (e) {
+      document.body.removeChild(wrap);
+      showToast(String(e.message || e));
+      return;
+    }
+
+    await document.fonts.ready;
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    setExportLongImageProgress('渲染长图…');
+
+    const maxPixels = 38000000;
+    let scale = Math.min(2, window.devicePixelRatio || 2);
+    const w = Math.max(1, wrap.offsetWidth);
+    const h = Math.max(1, wrap.scrollHeight);
+    while (w * h * scale * scale > maxPixels && scale > 0.45) scale -= 0.25;
+
+    const bgSolid =
+      getComputedStyle(wrap).backgroundColor && getComputedStyle(wrap).backgroundColor !== 'rgba(0, 0, 0, 0)'
+        ? getComputedStyle(wrap).backgroundColor
+        : bgChat;
+
+    let canvas;
+    try {
+      canvas = await h2c(wrap, {
+        scale,
+        useCORS: true,
+        allowTaint: false,
+        logging: false,
+        backgroundColor: bgSolid,
+        scrollX: 0,
+        scrollY: 0,
+        windowWidth: w,
+        windowHeight: h,
+        ignoreElements: (node) =>
+          node instanceof HTMLElement &&
+          (node.classList.contains('message-actions') ||
+            node.classList.contains('scroll-to-top-btn') ||
+            node.classList.contains('scroll-to-bottom-btn')),
+        onclone: (clonedDoc) => {
+          const cloneRoot =
+            clonedDoc.querySelector('.chat-export-capture-root') ||
+            clonedDoc.getElementById('chat-export-capture-root');
+          prepareDomForChatExport(cloneRoot);
+        },
+      });
+    } catch (err) {
+      document.body.removeChild(wrap);
+      console.error(err);
+      showToast('导出失败，对话过长时可尝试分段截图');
+      return;
+    }
+
     document.body.removeChild(wrap);
-    showToast(String(e.message || e));
-    return;
-  }
 
-  await document.fonts.ready;
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    setExportLongImageProgress('生成图片文件…');
 
-  const maxPixels = 38000000;
-  let scale = Math.min(2, window.devicePixelRatio || 2);
-  const w = Math.max(1, wrap.offsetWidth);
-  const h = Math.max(1, wrap.scrollHeight);
-  while (w * h * scale * scale > maxPixels && scale > 0.45) scale -= 0.25;
-
-  const bgSolid =
-    getComputedStyle(wrap).backgroundColor && getComputedStyle(wrap).backgroundColor !== 'rgba(0, 0, 0, 0)'
-      ? getComputedStyle(wrap).backgroundColor
-      : bgChat;
-
-  let canvas;
-  try {
-    canvas = await h2c(wrap, {
-      scale,
-      useCORS: true,
-      allowTaint: false,
-      logging: false,
-      backgroundColor: bgSolid,
-      scrollX: 0,
-      scrollY: 0,
-      windowWidth: w,
-      windowHeight: h,
-      ignoreElements: (node) =>
-        node instanceof HTMLElement &&
-        (node.classList.contains('message-actions') ||
-          node.classList.contains('scroll-to-top-btn') ||
-          node.classList.contains('scroll-to-bottom-btn')),
-      onclone: (clonedDoc) => {
-        const cloneRoot =
-          clonedDoc.querySelector('.chat-export-capture-root') ||
-          clonedDoc.getElementById('chat-export-capture-root');
-        prepareDomForChatExport(cloneRoot);
-      },
+    const blob = await new Promise((resolve) => {
+      canvas.toBlob((b) => resolve(b), 'image/png', 1);
     });
-  } catch (err) {
-    document.body.removeChild(wrap);
-    console.error(err);
-    showToast('导出失败，对话过长时可尝试分段截图');
-    return;
-  }
+    if (!blob) {
+      showToast('生成图片失败');
+      return;
+    }
 
-  document.body.removeChild(wrap);
-
-  const blob = await new Promise((resolve) => {
-    canvas.toBlob((b) => resolve(b), 'image/png', 1);
-  });
-  if (!blob) {
-    showToast('生成图片失败');
-    return;
+    hideExportLongImageProgress();
+    await saveImageBlobToAlbumOrDownload(blob, buildExportImageFilename());
+  } finally {
+    hideExportLongImageProgress();
   }
-  const filename = buildExportImageFilename();
-  await saveImageBlobToAlbumOrDownload(blob, filename);
 }
 
 // ========== 显示Toast提示 ==========
@@ -5317,12 +5541,18 @@ async function shareConversationAsText() {
   showToast('正在生成分享链接…');
 
   const payload = buildConversationSharePayloadFromDom();
-  if (!payload.items.length) {
+  const trimmed = trimSharePayloadItemsLikeExport(payload.items);
+  const merged = {
+    v: payload.v,
+    title: trimmed.title || payload.title,
+    items: trimmed.items,
+  };
+  if (!merged.items.length) {
     showToast('暂无有效对话');
     return;
   }
 
-  const result = await buildShareableConversationUrlWithTrimming(payload);
+  const result = await buildShareableConversationUrlWithTrimming(merged);
   if (!result.ok) {
     if (result.reason === 'NO_COMPRESS') showToast('当前浏览器不支持压缩，请升级或用系统浏览器打开');
     else if (result.reason === 'TOOLONG') showToast('对话过长，无法装入链接，请使用导出长图');

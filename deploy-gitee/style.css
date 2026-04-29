@@ -180,6 +180,54 @@ body {
   }
 }
 
+/* 导出长图：全屏进度遮罩 */
+.export-long-image-progress {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(45, 38, 33, 0.42);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+.export-long-image-progress-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 28px 36px;
+  max-width: min(320px, calc(100vw - 48px));
+  background: var(--white);
+  border-radius: 16px;
+  box-shadow: 0 12px 40px rgba(45, 38, 33, 0.18);
+}
+
+.export-long-image-spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid rgba(91, 74, 63, 0.15);
+  border-top-color: var(--accent, #8b6914);
+  animation: exportLongImageSpin 0.85s linear infinite;
+}
+
+@keyframes exportLongImageSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.export-long-image-progress-text {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+  text-align: center;
+}
+
 #app {
   display: flex;
   flex-direction: column;
