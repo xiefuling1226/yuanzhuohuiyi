@@ -1,5 +1,5 @@
 // 语音朗读模块
-// 方案：优先使用 Microsoft Edge 在线神经语音（免费，zh-CN 神经声里「晓晨」偏信息播报·亮堂，「云扬」偏新闻播音·字正腔圆）
+// 方案：优先使用 Microsoft Edge 在线神经语音（免费，音质接近真人）
 // 失败自动回退到浏览器内置 Web Speech API（并尽量挑选最优语音）
 
 // ========== 名人性别映射（女性名人） ==========
@@ -21,11 +21,9 @@ function getCelebrityGender(speakerName) {
 }
 
 // ========== Edge 在线神经语音（zh-CN）声线池 ==========
-// 池内顺序：越靠前越偏「吐字清晰 / 播音感」。每位名人按名字 hash 到一把，保证同一人声线稳定。
+// 每位名人按名字 hash 到其中一把，保证同一人每次都用同一把声音
 const EDGE_FEMALE_VOICES = [
-  'zh-CN-XiaochenNeural',  // 晓晨 - 明亮清晰，偏信息播报（默认可懂度最好的一档女声）
-  'zh-CN-XiaoxiaoNeural',  // 晓晓 - 温暖知性
-  'zh-CN-XiaomengNeural',  // 晓梦 - 温柔自然
+  'zh-CN-XiaoxiaoNeural',  // 晓晓 - 温暖知性（主持风玲默认）
   'zh-CN-XiaoyiNeural',    // 晓伊 - 活泼甜美
   'zh-CN-XiaohanNeural',   // 晓涵 - 温柔文艺
   'zh-CN-XiaomoNeural',    // 晓墨 - 沉稳大气
@@ -35,8 +33,8 @@ const EDGE_FEMALE_VOICES = [
   'zh-CN-XiaoshuangNeural',// 晓双 - 年轻活泼
 ];
 const EDGE_MALE_VOICES = [
-  'zh-CN-YunyangNeural',   // 云扬 - 新闻/专业播音，男声默认可懂度最好
   'zh-CN-YunxiNeural',     // 云希 - 阳光青年
+  'zh-CN-YunyangNeural',   // 云扬 - 专业播音
   'zh-CN-YunjianNeural',   // 云健 - 运动解说型低沉
   'zh-CN-YunfengNeural',   // 云枫 - 沉着坚定
   'zh-CN-YunhaoNeural',    // 云皓 - 热情有力
@@ -45,7 +43,7 @@ const EDGE_MALE_VOICES = [
 
 // 手工指定特定名人的神经语音（选择相对贴近历史/人物气质的声线）
 const CELEBRITY_EDGE_VOICE = {
-  '风玲':     'zh-CN-XiaochenNeural', // 主持人：清晰明亮女声
+  '风玲':     'zh-CN-XiaoxiaoNeural',
 
   '于丹':     'zh-CN-XiaoruiNeural',
   '屠呦呦':   'zh-CN-XiaoqiuNeural',
@@ -185,7 +183,7 @@ const CELEBRITY_EDGE_VOICE = {
 
 // ========== 名人个性化参数（仅用于本地回退；Edge 神经语音不需要这些） ==========
 const CELEBRITY_VOICE_PROFILES = {
-  '风玲':     { pitch: 1.05, rate: 0.98 },
+  '风玲':     { pitch: 1.05, rate: 1.05 },
   '蔡钰':     { pitch: 1.05, rate: 1.05 },
   '屠呦呦':   { pitch: 1.05, rate: 1.00 },
   '武则天':   { pitch: 1.00, rate: 1.05 },
@@ -254,7 +252,7 @@ const voiceState = {
   queue: [],
   processing: false,
   autoPlay: false,
-  rate: 0.92, // 略慢于 1.0，提升听清率（用户可在 UI 调节若后续有暴露）
+  rate: 1.0,
   pitch: 1.0,
   voice: null,
   voices: [],
@@ -270,7 +268,6 @@ function localVoiceQualityScore(v) {
   const n = (v.name || '').toLowerCase();
   let score = 0;
   if (n.includes('neural')) score += 100;
-  if (n.includes('xiaochen') || n.includes('yunyang')) score += 35; // 偏清晰播音
   if (n.includes('online')) score += 80;
   if (n.includes('natural')) score += 70;
   if (n.includes('premium')) score += 60;
@@ -282,7 +279,7 @@ function localVoiceQualityScore(v) {
 
 function isFemaleVoice(v) {
   const n = (v.name || '').toLowerCase();
-  return ['female', '女', 'xiaochen', 'xiaomeng', 'xiaoxiao', 'xiaoyi', 'xiaohan', 'xiaomo', 'xiaorui',
+  return ['female', '女', 'xiaoxiao', 'xiaoyi', 'xiaohan', 'xiaomo', 'xiaorui',
           'xiaoxuan', 'xiaoqiu', 'xiaoshuang', 'yaoyao', 'huihui', 'tingting',
           'mei-jia', 'meijia', 'sin-ji', 'yuna'].some(h => n.includes(h));
 }
@@ -406,7 +403,7 @@ function edgeTTSSynthesize(text, voiceName, rate = 1.0, timeoutMs = 10000) {
         'X-Timestamp:' + new Date().toISOString() + '\r\n' +
         'Content-Type:application/json; charset=utf-8\r\n' +
         'Path:speech.config\r\n\r\n' +
-        '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":false,"wordBoundaryEnabled":false},"outputFormat":"audio-24khz-96kbitrate-mono-mp3"}}}}';
+        '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":false,"wordBoundaryEnabled":false},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}';
       ws.send(configMsg);
 
       const ssml =
@@ -565,9 +562,9 @@ async function processQueue() {
     item.element.classList.add('voice-playing');
   }
 
-  // 组装朗读脚本：先说「某某说」再读正文（用逗号停顿，避免冒号被 TTS 吞成只念人名）
+  // 组装朗读脚本：先说"某某说："再朗读正文，合并为一句更自然
   const fullText = item.speakerName
-    ? `${item.speakerName}说，${item.text}`
+    ? `${item.speakerName}：${item.text}`
     : item.text;
 
   try {

@@ -1,6 +1,6 @@
 // 语音朗读模块
-// 方案：优先使用 Microsoft Edge 在线神经语音；**默认全场统一「晓晨」清晰女声**（手机端听感明显好于男声/多声线混播）
-// 失败自动回退到浏览器内置 Web Speech API（尽量只用本地女声池）
+// 方案：优先使用 Microsoft Edge 在线神经语音（免费，音质接近真人）
+// 失败自动回退到浏览器内置 Web Speech API（并尽量挑选最优语音）
 
 // ========== 名人性别映射（女性名人） ==========
 // 未列出的默认按男性处理
@@ -21,11 +21,9 @@ function getCelebrityGender(speakerName) {
 }
 
 // ========== Edge 在线神经语音（zh-CN）声线池 ==========
-// 池内顺序：越靠前越偏「吐字清晰 / 播音感」。每位名人按名字 hash 到一把，保证同一人声线稳定。
+// 每位名人按名字 hash 到其中一把，保证同一人每次都用同一把声音
 const EDGE_FEMALE_VOICES = [
-  'zh-CN-XiaochenNeural',  // 晓晨 - 明亮清晰，偏信息播报（默认可懂度最好的一档女声）
-  'zh-CN-XiaoxiaoNeural',  // 晓晓 - 温暖知性
-  'zh-CN-XiaomengNeural',  // 晓梦 - 温柔自然
+  'zh-CN-XiaoxiaoNeural',  // 晓晓 - 温暖知性（主持风玲默认）
   'zh-CN-XiaoyiNeural',    // 晓伊 - 活泼甜美
   'zh-CN-XiaohanNeural',   // 晓涵 - 温柔文艺
   'zh-CN-XiaomoNeural',    // 晓墨 - 沉稳大气
@@ -35,21 +33,17 @@ const EDGE_FEMALE_VOICES = [
   'zh-CN-XiaoshuangNeural',// 晓双 - 年轻活泼
 ];
 const EDGE_MALE_VOICES = [
-  'zh-CN-YunyangNeural',   // 云扬 - 新闻/专业播音，男声默认可懂度最好
   'zh-CN-YunxiNeural',     // 云希 - 阳光青年
+  'zh-CN-YunyangNeural',   // 云扬 - 专业播音
   'zh-CN-YunjianNeural',   // 云健 - 运动解说型低沉
   'zh-CN-YunfengNeural',   // 云枫 - 沉着坚定
   'zh-CN-YunhaoNeural',    // 云皓 - 热情有力
   'zh-CN-YunzeNeural',     // 云泽 - 中老年沉稳
 ];
 
-/** 在线 TTS 统一使用的清晰女声（手机外放/蓝牙耳机上可懂度最好）；置 false 则恢复按名人性别/hash 选声线 */
-const EDGE_USE_UNIFIED_FEMALE_VOICE = true;
-const EDGE_UNIFIED_FEMALE_VOICE = 'zh-CN-XiaochenNeural';
-
-// 手工指定特定名人的神经语音（EDGE_USE_UNIFIED_FEMALE_VOICE 为 true 时不使用，仅保留作将来扩展）
+// 手工指定特定名人的神经语音（选择相对贴近历史/人物气质的声线）
 const CELEBRITY_EDGE_VOICE = {
-  '风玲':     'zh-CN-XiaochenNeural', // 主持人：清晰明亮女声
+  '风玲':     'zh-CN-XiaoxiaoNeural',
 
   '于丹':     'zh-CN-XiaoruiNeural',
   '屠呦呦':   'zh-CN-XiaoqiuNeural',
@@ -189,7 +183,7 @@ const CELEBRITY_EDGE_VOICE = {
 
 // ========== 名人个性化参数（仅用于本地回退；Edge 神经语音不需要这些） ==========
 const CELEBRITY_VOICE_PROFILES = {
-  '风玲':     { pitch: 1.05, rate: 0.98 },
+  '风玲':     { pitch: 1.05, rate: 1.05 },
   '蔡钰':     { pitch: 1.05, rate: 1.05 },
   '屠呦呦':   { pitch: 1.05, rate: 1.00 },
   '武则天':   { pitch: 1.00, rate: 1.05 },
@@ -243,7 +237,6 @@ function hashString(s) {
 }
 
 function getEdgeVoiceForSpeaker(speakerName) {
-  if (EDGE_USE_UNIFIED_FEMALE_VOICE) return EDGE_UNIFIED_FEMALE_VOICE;
   if (!speakerName) return EDGE_FEMALE_VOICES[0];
   if (CELEBRITY_EDGE_VOICE[speakerName]) return CELEBRITY_EDGE_VOICE[speakerName];
   const pool = getCelebrityGender(speakerName) === 'female' ? EDGE_FEMALE_VOICES : EDGE_MALE_VOICES;
@@ -259,16 +252,14 @@ const voiceState = {
   queue: [],
   processing: false,
   autoPlay: false,
-  rate: 0.98, // 接近日常语速，手机扬声器上比过慢更易听清
+  rate: 1.0,
   pitch: 1.0,
   voice: null,
   voices: [],
   femaleVoices: [],            // 本地高品质女声池
   maleVoices: [],              // 本地高品质男声池
   useEdgeTTS: true,            // 默认启用在线神经语音
-  edgeAvailable: true,         // 在线语音是否可用
-  edgeFailStreak: 0,           // 连续失败次数，避免手机偶发断线后整会话锁死劣质本地音
-  preferFemaleLocalFallback: true, // 回退 Web Speech 时也尽量用女声（与统一听感一致）
+  edgeAvailable: true,         // 在线语音是否可用（遇到失败会临时置 false 回退）
 };
 
 // ========== 本地语音：优选策略 ==========
@@ -277,7 +268,6 @@ function localVoiceQualityScore(v) {
   const n = (v.name || '').toLowerCase();
   let score = 0;
   if (n.includes('neural')) score += 100;
-  if (n.includes('xiaochen') || n.includes('yunyang')) score += 35; // 偏清晰播音
   if (n.includes('online')) score += 80;
   if (n.includes('natural')) score += 70;
   if (n.includes('premium')) score += 60;
@@ -289,7 +279,7 @@ function localVoiceQualityScore(v) {
 
 function isFemaleVoice(v) {
   const n = (v.name || '').toLowerCase();
-  return ['female', '女', 'xiaochen', 'xiaomeng', 'xiaoxiao', 'xiaoyi', 'xiaohan', 'xiaomo', 'xiaorui',
+  return ['female', '女', 'xiaoxiao', 'xiaoyi', 'xiaohan', 'xiaomo', 'xiaorui',
           'xiaoxuan', 'xiaoqiu', 'xiaoshuang', 'yaoyao', 'huihui', 'tingting',
           'mei-jia', 'meijia', 'sin-ji', 'yuna'].some(h => n.includes(h));
 }
@@ -306,9 +296,6 @@ function pickVoiceForGender(gender) {
 }
 
 function pickLocalVoiceForSpeaker(speakerName) {
-  if (voiceState.preferFemaleLocalFallback && voiceState.femaleVoices && voiceState.femaleVoices.length) {
-    return voiceState.femaleVoices[hashString(speakerName || 'default') % voiceState.femaleVoices.length];
-  }
   const gender = getCelebrityGender(speakerName);
   const pool = gender === 'female' ? voiceState.femaleVoices : voiceState.maleVoices;
   if (pool && pool.length) {
@@ -416,7 +403,7 @@ function edgeTTSSynthesize(text, voiceName, rate = 1.0, timeoutMs = 10000) {
         'X-Timestamp:' + new Date().toISOString() + '\r\n' +
         'Content-Type:application/json; charset=utf-8\r\n' +
         'Path:speech.config\r\n\r\n' +
-        '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":false,"wordBoundaryEnabled":false},"outputFormat":"audio-24khz-160kbitrate-mono-mp3"}}}}';
+        '{"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":false,"wordBoundaryEnabled":false},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}';
       ws.send(configMsg);
 
       const ssml =
@@ -575,22 +562,20 @@ async function processQueue() {
     item.element.classList.add('voice-playing');
   }
 
-  // 组装朗读脚本：先说「某某说」再读正文（用逗号停顿，避免冒号被 TTS 吞成只念人名）
+  // 组装朗读脚本：先说"某某说："再朗读正文，合并为一句更自然
   const fullText = item.speakerName
-    ? `${item.speakerName}说，${item.text}`
+    ? `${item.speakerName}：${item.text}`
     : item.text;
 
   try {
     if (voiceState.useEdgeTTS && voiceState.edgeAvailable) {
       await speakViaEdge(fullText, item);
-      voiceState.edgeFailStreak = 0;
     } else {
       await speakViaLocal(fullText, item);
     }
   } catch (err) {
     console.warn('Edge TTS 失败，回退本地语音:', err && err.message);
-    voiceState.edgeFailStreak = (voiceState.edgeFailStreak || 0) + 1;
-    if (voiceState.edgeFailStreak >= 3) voiceState.edgeAvailable = false;
+    voiceState.edgeAvailable = false;
     try {
       await speakViaLocal(fullText, item);
     } catch (e2) {
@@ -624,11 +609,6 @@ function speakViaEdge(text, item) {
     }
 
     const audio = new Audio(url);
-    try {
-      audio.setAttribute('playsinline', '');
-      audio.preload = 'auto';
-      audio.playsInline = true;
-    } catch (_) {}
     voiceState.currentAudio = audio;
     audio.onended = () => {
       try { URL.revokeObjectURL(url); } catch (_) {}
@@ -766,8 +746,7 @@ function setVoicePitch(pitch) {
 // 一键切换"高品质在线语音/本地语音"
 function setUseEdgeTTS(on) {
   voiceState.useEdgeTTS = !!on;
-  voiceState.edgeAvailable = true;
-  voiceState.edgeFailStreak = 0;
+  voiceState.edgeAvailable = true; // 重置可用性标记
   console.log('Edge TTS', on ? '已启用' : '已关闭');
 }
 

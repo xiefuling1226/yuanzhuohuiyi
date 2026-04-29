@@ -188,8 +188,8 @@ body {
   max-width: 520px;
   margin: 0 auto;
   position: relative; /* 承载回到底部按钮的绝对定位 */
-  min-height: 0; /* 子项 flex:1 区域可收缩，配合 chat-area 内部滚动 */
   background: var(--bg);
+  position: relative;
 }
 
 /* ========== 顶部栏 ========== */
@@ -423,14 +423,11 @@ body {
 /* ========== 对话区域 ========== */
 .chat-area {
   flex: 1;
-  min-height: 0; /* 允许在 flex 列布局中收缩，否则长对话时内部无法独立滚动 */
   overflow-y: auto;
   padding: 16px;
   background: var(--bg-chat);
-  scroll-behavior: auto; /* 流式输出时频繁滚底，避免 smooth 与用户上滑抢滚动 */
+  scroll-behavior: smooth;
   -webkit-overflow-scrolling: touch;
-  touch-action: pan-y;
-  overscroll-behavior: contain;
 }
 
 /* ========== 消息气泡 ========== */
@@ -1092,6 +1089,165 @@ body {
 
 .modal-close:active {
   background: var(--primary-lighter);
+}
+
+.settings-modal {
+  width: min(92%, 420px);
+  max-width: 420px;
+  padding: 22px 20px 18px;
+  text-align: left;
+}
+
+.settings-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.settings-modal-header h3 {
+  margin-bottom: 6px;
+}
+
+.settings-modal-header p {
+  margin-bottom: 0;
+  line-height: 1.5;
+}
+
+.settings-close-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: var(--bg);
+  color: var(--text-light);
+  border-radius: 10px;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.settings-close-btn:active {
+  background: var(--primary-lighter);
+}
+
+.settings-section {
+  padding: 14px 0;
+}
+
+.settings-section + .settings-section {
+  border-top: 1px solid rgba(91, 74, 63, 0.08);
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-current {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--primary);
+  background: rgba(91, 74, 63, 0.08);
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.settings-tip {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-light);
+  margin-bottom: 12px;
+}
+
+.settings-option-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-option {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px;
+  border: 1px solid rgba(91, 74, 63, 0.12);
+  border-radius: 14px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+}
+
+.settings-option:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(196, 154, 108, 0.1);
+  box-shadow: 0 4px 16px rgba(91, 74, 63, 0.08);
+}
+
+.settings-option input {
+  margin-top: 2px;
+  accent-color: var(--primary);
+}
+
+.settings-option-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-option-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.settings-option-desc {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-light);
+}
+
+.settings-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.settings-secondary-btn,
+.settings-primary-btn {
+  flex: 1;
+  border: none;
+  border-radius: 12px;
+  padding: 11px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.settings-secondary-btn {
+  background: var(--bg);
+  color: var(--text-light);
+}
+
+.settings-secondary-btn:active {
+  background: var(--primary-lighter);
+}
+
+.settings-primary-btn {
+  background: var(--primary);
+  color: var(--white);
+}
+
+.settings-primary-btn:active {
+  background: var(--primary-light);
 }
 
 /* ========== 桌面端适配 ========== */

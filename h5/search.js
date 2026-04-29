@@ -174,7 +174,7 @@ async function generateTimeContext(userMessage) {
   
   if (searchResult) {
     const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-    return `## 最新信息补充（检索时间：${now}）\n${searchResult}\n\n**注意**：以上来自互联网公开检索（维基/搜索引擎等），用于填补**模型知识截止时间**与**当前时间**之间的事实与近况空档，**可靠度应优先于**模型对近期可核查事实的猜测；请概括转述，不要捏造条目中不存在的具体数字或原话。`;
+    return `## 最新信息补充（检索时间：${now}）\n${searchResult}\n\n**注意**：以上信息来自实时网络搜索，可能与模型训练数据不同。`;
   }
   
   return null;
@@ -219,7 +219,7 @@ async function generateCelebrityTimeContext(selectedCelebrityKeys, userMessage) 
 
   if (sections.length === 0) return null;
   const now = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-  return `## 嘉宾时效信息补充（检索时间：${now}）\n${sections.join('\n\n')}\n\n**使用要求**：请优先以各嘉宾既有思想体系/skill为核心，将以上联网内容作为**近时事实与人物近况**的补充依据；若与 skill 中过时信息冲突，以**本段检索**为准作近况。不要编造未出现在上述检索中的可核查事实。`;
+  return `## 嘉宾时效信息补充（检索时间：${now}）\n${sections.join('\n\n')}\n\n**使用要求**：请优先以各嘉宾既有思想体系/skill为核心，仅将以上信息作为“2024年后补充背景”，不要编造未检索到的事实。`;
 }
 
 /**
