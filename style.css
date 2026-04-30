@@ -124,6 +124,17 @@ body {
   flex-shrink: 0;
 }
 
+@media (max-width: 768px) {
+  .msg-action-btn {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 10px;
+    box-sizing: border-box;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
 /* 隐藏文字，只显示图标 */
 .msg-action-btn span {
   display: none;

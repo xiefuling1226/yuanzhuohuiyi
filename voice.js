@@ -1,52 +1,13 @@
 // 语音朗读模块
-// 方案：优先使用 Microsoft Edge 在线神经语音；**默认全场统一清晰女声「晓晓」**（频段相对饱满，手机扬声器听感通常更易辨识）
-// 失败自动回退到浏览器内置 Web Speech API（尽量只用本地女声池，并略微放慢语速）
+// Microsoft Edge 在线神经语音：全场固定「晓晨」zh-CN-XiaochenNeural（清晰播报向中文女声），不按发言人切换。
+// 失败时回退 Web Speech API：仅使用本机中文女声；语速略慢以便听清。
 
-// ========== 名人性别映射（女性名人） ==========
-// 未列出的默认按男性处理
-const CELEBRITY_GENDER = {
-  '风玲': 'female',
-  '于丹': 'female',
-  '屠呦呦': 'female',
-  '武则天': 'female',
-  '蒙台梭利': 'female',
-  '蔡钰': 'female',
-  '张雪': 'female',
-  '李玫瑾': 'female',
-  '梁宁': 'female',
-};
+/** Edge TTS 固定声线：晓晨（明亮清晰，偏信息播报） */
+const EDGE_TTS_VOICE_ZH_FEMALE_CLEAR = 'zh-CN-XiaochenNeural';
 
-function getCelebrityGender(speakerName) {
-  return CELEBRITY_GENDER[speakerName] || 'male';
+function getEdgeVoiceForSpeaker(_speakerName) {
+  return EDGE_TTS_VOICE_ZH_FEMALE_CLEAR;
 }
-
-// ========== Edge 在线神经语音（zh-CN）声线池 ==========
-// 池内顺序：越靠前越偏「吐字清晰 / 播音感」。每位名人按名字 hash 到一把，保证同一人声线稳定。
-const EDGE_FEMALE_VOICES = [
-  'zh-CN-XiaochenNeural',  // 晓晨 - 明亮清晰，偏信息播报（默认可懂度最好的一档女声）
-  'zh-CN-XiaoxiaoNeural',  // 晓晓 - 温暖知性
-  'zh-CN-XiaomengNeural',  // 晓梦 - 温柔自然
-  'zh-CN-XiaoyiNeural',    // 晓伊 - 活泼甜美
-  'zh-CN-XiaohanNeural',   // 晓涵 - 温柔文艺
-  'zh-CN-XiaomoNeural',    // 晓墨 - 沉稳大气
-  'zh-CN-XiaoruiNeural',   // 晓睿 - 成熟稳重
-  'zh-CN-XiaoxuanNeural',  // 晓萱 - 利落干练
-  'zh-CN-XiaoqiuNeural',   // 晓秋 - 成熟柔和
-  'zh-CN-XiaoshuangNeural',// 晓双 - 年轻活泼
-];
-const EDGE_MALE_VOICES = [
-  'zh-CN-YunyangNeural',   // 云扬 - 新闻/专业播音，男声默认可懂度最好
-  'zh-CN-YunxiNeural',     // 云希 - 阳光青年
-  'zh-CN-YunjianNeural',   // 云健 - 运动解说型低沉
-  'zh-CN-YunfengNeural',   // 云枫 - 沉着坚定
-  'zh-CN-YunhaoNeural',    // 云皓 - 热情有力
-  'zh-CN-YunzeNeural',     // 云泽 - 中老年沉稳
-];
-
-/** 在线 TTS 统一使用的清晰女声（手机外放/蓝牙耳机上可懂度最好）；置 false 则恢复按名人性别/hash 选声线 */
-const EDGE_USE_UNIFIED_FEMALE_VOICE = true;
-// 晓晓：微软常用默认中文神经女声，频段相对饱满，手机扬声器上多数场景比偏「播报腔」的晓晨更易听清
-const EDGE_UNIFIED_FEMALE_VOICE = 'zh-CN-XiaoxiaoNeural';
 
 function isMobileLikeDevice() {
   if (typeof navigator === 'undefined') return false;
@@ -65,215 +26,40 @@ function isIOSOrWeChatWebView() {
   return /iphone|ipad|ipod/i.test(ua) || /micromessenger/i.test(ua);
 }
 
-// 手工指定特定名人的神经语音（EDGE_USE_UNIFIED_FEMALE_VOICE 为 true 时不使用，仅保留作将来扩展）
-const CELEBRITY_EDGE_VOICE = {
-  '风玲':     'zh-CN-XiaochenNeural', // 主持人：清晰明亮女声
-
-  '于丹':     'zh-CN-XiaoruiNeural',
-  '屠呦呦':   'zh-CN-XiaoqiuNeural',
-  '武则天':   'zh-CN-XiaomoNeural',
-  '蒙台梭利': 'zh-CN-XiaohanNeural',
-  '蔡钰':     'zh-CN-XiaoxuanNeural',
-  '张雪':     'zh-CN-XiaoxuanNeural',
-  '李玫瑾':   'zh-CN-XiaoruiNeural',
-  '梁宁':     'zh-CN-XiaoxuanNeural',
-
-  '毛泽东':   'zh-CN-YunzeNeural',
-  '秦始皇':   'zh-CN-YunjianNeural',
-  '曹操':     'zh-CN-YunjianNeural',
-  '李世民':   'zh-CN-YunfengNeural',
-  '刘邦':     'zh-CN-YunfengNeural',
-  '凯撒':     'zh-CN-YunjianNeural',
-  '拿破仑':   'zh-CN-YunhaoNeural',
-  '丘吉尔':   'zh-CN-YunzeNeural',
-  '林肯':     'zh-CN-YunfengNeural',
-  '曼德拉':   'zh-CN-YunzeNeural',
-  '甘地':     'zh-CN-YunfengNeural',
-  '特朗普':   'zh-CN-YunhaoNeural',
-
-  '孔子':     'zh-CN-YunzeNeural',
-  '老子':     'zh-CN-YunzeNeural',
-  '庄子':     'zh-CN-YunfengNeural',
-  '孟子':     'zh-CN-YunfengNeural',
-  '墨子':     'zh-CN-YunjianNeural',
-  '孙子':     'zh-CN-YunjianNeural',
-  '王阳明':   'zh-CN-YunfengNeural',
-  '韩非子':   'zh-CN-YunjianNeural',
-  '苏格拉底': 'zh-CN-YunzeNeural',
-  '柏拉图':   'zh-CN-YunfengNeural',
-  '亚里士多德':'zh-CN-YunfengNeural',
-
-  '乔布斯':   'zh-CN-YunhaoNeural',
-  '埃隆·马斯克':'zh-CN-YunxiNeural',
-  '比尔·盖茨':'zh-CN-YunxiNeural',
-  '杰夫·贝索斯':'zh-CN-YunyangNeural',
-  '沃伦·巴菲特':'zh-CN-YunzeNeural',
-  '查理·芒格':'zh-CN-YunzeNeural',
-  '稻盛和夫': 'zh-CN-YunzeNeural',
-  '松下幸之助':'zh-CN-YunzeNeural',
-  '任正非':   'zh-CN-YunfengNeural',
-  '马云':     'zh-CN-YunhaoNeural',
-  '张一鸣':   'zh-CN-YunxiNeural',
-  '李斌':     'zh-CN-YunxiNeural',
-  '曹德旺':   'zh-CN-YunfengNeural',
-  '山姆·沃尔顿':'zh-CN-YunfengNeural',
-  '瑞·达利欧':'zh-CN-YunyangNeural',
-  '洛克菲勒': 'zh-CN-YunzeNeural',
-
-  '爱因斯坦': 'zh-CN-YunyangNeural',
-  '牛顿':     'zh-CN-YunfengNeural',
-  '霍金':     'zh-CN-YunjianNeural',
-  '图灵':     'zh-CN-YunxiNeural',
-  '费曼':     'zh-CN-YunxiNeural',
-  '冯·诺依曼':'zh-CN-YunyangNeural',
-  '香农':     'zh-CN-YunyangNeural',
-  '特斯拉':   'zh-CN-YunfengNeural',
-  '达尔文':   'zh-CN-YunyangNeural',
-  '钱学森':   'zh-CN-YunfengNeural',
-  '杨振宁':   'zh-CN-YunzeNeural',
-  '袁隆平':   'zh-CN-YunzeNeural',
-  '张衡':     'zh-CN-YunfengNeural',
-  '祖冲之':   'zh-CN-YunfengNeural',
-  '尹烨':     'zh-CN-YunxiNeural',
-  '王立铭':   'zh-CN-YunxiNeural',
-
-  '马克思':   'zh-CN-YunyangNeural',
-  '尼采':     'zh-CN-YunfengNeural',
-  '康德':     'zh-CN-YunyangNeural',
-  '黑格尔':   'zh-CN-YunyangNeural',
-  '弗洛伊德': 'zh-CN-YunyangNeural',
-  '荣格':     'zh-CN-YunyangNeural',
-  '阿德勒':   'zh-CN-YunfengNeural',
-  '马斯洛':   'zh-CN-YunyangNeural',
-  '弗兰克尔': 'zh-CN-YunyangNeural',
-  '约翰·杜威':'zh-CN-YunyangNeural',
-  '以赛亚·伯林':'zh-CN-YunzeNeural',
-  '武志红':   'zh-CN-YunxiNeural',
-
-  '亚当·斯密':'zh-CN-YunyangNeural',
-  '凯恩斯':   'zh-CN-YunyangNeural',
-  '彼得·德鲁克':'zh-CN-YunzeNeural',
-  '薛兆丰':   'zh-CN-YunxiNeural',
-  '刘润':     'zh-CN-YunxiNeural',
-  '吴军':     'zh-CN-YunxiNeural',
-  '吴伯凡':   'zh-CN-YunxiNeural',
-  '罗振宇':   'zh-CN-YunxiNeural',
-  '樊登':     'zh-CN-YunxiNeural',
-  '纳西姆·塔勒布':'zh-CN-YunyangNeural',
-
-  '鲁迅':     'zh-CN-YunfengNeural',
-  '莫言':     'zh-CN-YunzeNeural',
-  '余华':     'zh-CN-YunxiNeural',
-  '冯唐':     'zh-CN-YunxiNeural',
-  '刘墉':     'zh-CN-YunzeNeural',
-  '蒋勋':     'zh-CN-YunzeNeural',
-  '林语堂':   'zh-CN-YunfengNeural',
-  '刘慈欣':   'zh-CN-YunfengNeural',
-  '苏轼':     'zh-CN-YunfengNeural',
-  '李白':     'zh-CN-YunhaoNeural',
-  '杜甫':     'zh-CN-YunzeNeural',
-  '王羲之':   'zh-CN-YunfengNeural',
-  '罗贯中':   'zh-CN-YunzeNeural',
-  '吴承恩':   'zh-CN-YunzeNeural',
-  '施耐庵':   'zh-CN-YunzeNeural',
-  '曹雪芹':   'zh-CN-YunzeNeural',
-  '司马光':   'zh-CN-YunzeNeural',
-  '司马迁':   'zh-CN-YunzeNeural',
-  '诸葛亮':   'zh-CN-YunfengNeural',
-  '当年明月': 'zh-CN-YunxiNeural',
-  '莎士比亚': 'zh-CN-YunfengNeural',
-  '托尔斯泰': 'zh-CN-YunzeNeural',
-  '海明威':   'zh-CN-YunfengNeural',
-  '易中天':   'zh-CN-YunxiNeural',
-  '傅佩荣':   'zh-CN-YunzeNeural',
-  '曾仕强':   'zh-CN-YunzeNeural',
-  '华杉':     'zh-CN-YunxiNeural',
-
-  '贝多芬':   'zh-CN-YunfengNeural',
-  '梵高':     'zh-CN-YunfengNeural',
-  '毕加索':   'zh-CN-YunhaoNeural',
-  '达芬奇':   'zh-CN-YunyangNeural',
-  '吴冠中':   'zh-CN-YunzeNeural',
-
-  '罗翔':     'zh-CN-YunxiNeural',
-  '张雪峰':   'zh-CN-YunxiNeural',
-  '蔡康永':   'zh-CN-YunxiNeural',
-  '韩望喜':   'zh-CN-YunzeNeural',
-  '蒋海松':   'zh-CN-YunxiNeural',
-  '徐文兵':   'zh-CN-YunzeNeural',
-  '翟双庆':   'zh-CN-YunzeNeural',
-  '陶行知':   'zh-CN-YunzeNeural',
-};
-
-// ========== 名人个性化参数（仅用于本地回退；Edge 神经语音不需要这些） ==========
-const CELEBRITY_VOICE_PROFILES = {
-  '风玲':     { pitch: 1.05, rate: 0.98 },
-  '蔡钰':     { pitch: 1.05, rate: 1.05 },
-  '屠呦呦':   { pitch: 1.05, rate: 1.00 },
-  '武则天':   { pitch: 1.00, rate: 1.05 },
-  '蒙台梭利': { pitch: 1.05, rate: 1.00 },
-  '于丹':     { pitch: 1.05, rate: 1.00 },
-  '张雪':     { pitch: 1.05, rate: 1.05 },
-  '李玫瑾':   { pitch: 1.00, rate: 1.00 },
-  '梁宁':     { pitch: 1.05, rate: 1.00 },
-
-  '孔子': { pitch: 0.95, rate: 1.00 },
-  '老子': { pitch: 0.92, rate: 0.95 },
-  '庄子': { pitch: 0.95, rate: 1.00 },
-  '王阳明': { pitch: 0.95, rate: 1.00 },
-  '毛泽东': { pitch: 0.97, rate: 1.00 },
-  '曹操':   { pitch: 0.97, rate: 1.05 },
-  '李世民': { pitch: 0.95, rate: 1.00 },
-
-  '爱因斯坦': { pitch: 1.00, rate: 1.05 },
-  '图灵':     { pitch: 1.00, rate: 1.05 },
-  '牛顿':     { pitch: 0.97, rate: 1.00 },
-  '马克思':   { pitch: 0.95, rate: 1.00 },
-  '亚当·斯密':{ pitch: 0.97, rate: 1.00 },
-
-  '乔布斯':   { pitch: 1.00, rate: 1.10 },
-  '埃隆·马斯克':{ pitch: 1.00, rate: 1.10 },
-  '特朗普':   { pitch: 0.97, rate: 1.10 },
-  '丘吉尔':   { pitch: 0.92, rate: 1.00 },
-
-  '沃伦·巴菲特': { pitch: 0.97, rate: 1.00 },
-  '比尔·盖茨':   { pitch: 1.00, rate: 1.05 },
-  '稻盛和夫':    { pitch: 0.95, rate: 0.95 },
-  '任正非':      { pitch: 0.95, rate: 1.00 },
-
-  'default_male':   { pitch: 0.97, rate: 1.05 },
-  'default_female': { pitch: 1.05, rate: 1.05 },
-};
-
-function getCelebrityVoiceConfig(speakerName) {
-  if (CELEBRITY_VOICE_PROFILES[speakerName]) return CELEBRITY_VOICE_PROFILES[speakerName];
-  const gender = getCelebrityGender(speakerName);
-  return gender === 'female'
-    ? CELEBRITY_VOICE_PROFILES['default_female']
-    : CELEBRITY_VOICE_PROFILES['default_male'];
+/** 移动端：异步 Edge TTS + blob 常在脱离用户手势后被系统静默静音；改用系统朗读（本地女声池）以保证出声；桌面仍用 Edge 神经女声 */
+function shouldPreferLocalSpeechOverEdge() {
+  return isMobileLikeDevice();
 }
 
-// 按名字 hash 选一把声音（在声音池里保持稳定映射）
+
+// ========== 本地回退：统一女声语速/音高 ==========
+const CELEBRITY_VOICE_PROFILES = {
+  default_female: { pitch: 1.05, rate: 1.05 },
+};
+
+function getCelebrityVoiceConfig(_speakerName) {
+  return CELEBRITY_VOICE_PROFILES.default_female;
+}
+
+// 按名字 hash 在本地女声池中取一把（稳定映射）
 function hashString(s) {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
   return Math.abs(h);
 }
 
-function getEdgeVoiceForSpeaker(speakerName) {
-  if (EDGE_USE_UNIFIED_FEMALE_VOICE) return EDGE_UNIFIED_FEMALE_VOICE;
-  if (!speakerName) return EDGE_FEMALE_VOICES[0];
-  if (CELEBRITY_EDGE_VOICE[speakerName]) return CELEBRITY_EDGE_VOICE[speakerName];
-  const pool = getCelebrityGender(speakerName) === 'female' ? EDGE_FEMALE_VOICES : EDGE_MALE_VOICES;
-  return pool[hashString(speakerName) % pool.length];
-}
-
 // ========== 全局语音状态 ==========
+/** 用于在用户手势内抢占移动端音频解锁（异步合成后再 play 否则会无声） */
+const SILENT_AUDIO_DATA_URI =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA==';
+
 const voiceState = {
   enabled: true,
   isSpeaking: false,
   currentUtterance: null,
-  currentAudio: null,          // Edge TTS 播放中的 <audio> 对象
+  currentAudio: null,          // Edge TTS 播放中的 <audio> 对象（与 sharedPlaybackAudio 同一实例）
+  sharedPlaybackAudio: null,   // 全程复用一个 audio，便于 iOS / WebView 解锁后续 blob 播放
+  sharedPlaybackPrimed: false, // 是否已在手势内成功 play 过静音（解锁标记）
   queue: [],
   processing: false,
   autoPlay: false,
@@ -286,8 +72,47 @@ const voiceState = {
   useEdgeTTS: true,            // 默认启用在线神经语音
   edgeAvailable: true,         // 在线语音是否可用
   edgeFailStreak: 0,           // 连续失败次数，避免手机偶发断线后整会话锁死劣质本地音
-  preferFemaleLocalFallback: true, // 回退 Web Speech 时也尽量用女声（与统一听感一致）
 };
+
+function getSharedPlaybackAudio() {
+  if (!voiceState.sharedPlaybackAudio) {
+    const a = document.createElement('audio');
+    a.setAttribute('playsinline', '');
+    a.setAttribute('webkit-playsinline', '');
+    a.setAttribute('x-webkit-airplay', 'allow');
+    a.preload = 'auto';
+    try {
+      a.playsInline = true;
+    } catch (_) {}
+    voiceState.sharedPlaybackAudio = a;
+  }
+  return voiceState.sharedPlaybackAudio;
+}
+
+/** 在用户手势栈内调用：同一 audio 先播极短静音，后续异步设置的 blob/mp3 更易通过系统的「允许有声播放」策略 */
+function primeSharedPlaybackAudioFromGesture() {
+  if (voiceState.sharedPlaybackPrimed) return;
+  try {
+    const a = getSharedPlaybackAudio();
+    try {
+      a.pause();
+    } catch (_) {}
+    a.src = SILENT_AUDIO_DATA_URI;
+    a.volume = 0.001;
+    const p = a.play();
+    if (p && typeof p.then === 'function') {
+      p.then(() => {
+        try {
+          a.pause();
+          a.volume = 1;
+          voiceState.sharedPlaybackPrimed = true;
+        } catch (_) {}
+      }).catch(() => {});
+    } else {
+      voiceState.sharedPlaybackPrimed = true;
+    }
+  } catch (_) {}
+}
 
 /** iOS / 微信内置浏览器：须在用户手势内解锁音频；异步 TTS 完成后再 play() 会失去手势上下文，故先解锁并重试播放 */
 function unlockMobileAudioPlayback() {
@@ -306,9 +131,7 @@ function unlockMobileAudioPlayback() {
     }
   } catch (_) {}
   try {
-    const silent = new Audio(
-      'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA=='
-    );
+    const silent = new Audio(SILENT_AUDIO_DATA_URI);
     silent.volume = 0.001;
     const p = silent.play();
     if (p && typeof p.then === 'function') {
@@ -320,6 +143,9 @@ function unlockMobileAudioPlayback() {
       }).catch(() => {});
     }
   } catch (_) {}
+  if (isMobileLikeDevice() || isIOSOrWeChatWebView()) {
+    primeSharedPlaybackAudioFromGesture();
+  }
 }
 
 // ========== 本地语音：优选策略 ==========
@@ -355,22 +181,12 @@ function isMaleVoice(v) {
           'yunze', 'kangkang', 'daniel'].some(h => n.includes(h));
 }
 
-function pickVoiceForGender(gender) {
-  const pool = gender === 'female' ? voiceState.femaleVoices : voiceState.maleVoices;
-  if (pool && pool.length) return pool[0];
-  return voiceState.voice || null;
-}
-
 function pickLocalVoiceForSpeaker(speakerName) {
-  if (voiceState.preferFemaleLocalFallback && voiceState.femaleVoices && voiceState.femaleVoices.length) {
-    return voiceState.femaleVoices[hashString(speakerName || 'default') % voiceState.femaleVoices.length];
-  }
-  const gender = getCelebrityGender(speakerName);
-  const pool = gender === 'female' ? voiceState.femaleVoices : voiceState.maleVoices;
+  const pool = voiceState.femaleVoices;
   if (pool && pool.length) {
     return pool[hashString(speakerName || 'default') % pool.length];
   }
-  return pickVoiceForGender(gender);
+  return voiceState.voice || null;
 }
 
 // ========== 初始化 ==========
@@ -623,13 +439,15 @@ function toggleVoice() {
 }
 
 function stopCurrentAudio() {
-  if (voiceState.currentAudio) {
+  const a = voiceState.currentAudio || voiceState.sharedPlaybackAudio;
+  if (a) {
     try {
-      voiceState.currentAudio.pause();
-      voiceState.currentAudio.src = '';
+      a.pause();
+      a.removeAttribute('src');
+      a.load();
     } catch (_) {}
-    voiceState.currentAudio = null;
   }
+  voiceState.currentAudio = null;
 }
 
 function speak(text, speakerName = '') {
@@ -706,7 +524,8 @@ async function processQueue() {
     : item.text;
 
   try {
-    if (voiceState.useEdgeTTS && voiceState.edgeAvailable) {
+    const preferLocal = shouldPreferLocalSpeechOverEdge();
+    if (voiceState.useEdgeTTS && voiceState.edgeAvailable && !preferLocal) {
       await speakViaEdge(fullText, item);
       voiceState.edgeFailStreak = 0;
     } else {
@@ -739,6 +558,7 @@ async function processQueue() {
 // Edge 在线神经语音播放（可分多段，适配手机弱网与扬声器）
 async function speakViaEdge(text, item) {
   warmUpLocalVoices();
+  unlockMobileAudioPlayback();
   const voiceName = getEdgeVoiceForSpeaker(item.speakerName);
   const mobile = isMobileLikeDevice();
   const rateMul = mobile ? 0.91 : 1;
@@ -752,46 +572,76 @@ async function speakViaEdge(text, item) {
 
   function playBlobUrl(url) {
     return new Promise((resolve, reject) => {
-      const audio = new Audio(url);
+      const audio = getSharedPlaybackAudio();
       audio.volume = 1;
-      try {
-        audio.setAttribute('playsinline', '');
-        audio.preload = 'auto';
-        audio.playsInline = true;
-      } catch (_) {}
 
-      const cleanup = () => {
+      let settled = false;
+      const detach = () => {
+        audio.removeEventListener('ended', onEnded);
+        audio.removeEventListener('error', onErr);
+        audio.removeEventListener('pause', onPause);
+      };
+      const finishOk = () => {
+        if (settled) return;
+        settled = true;
+        detach();
         try {
           URL.revokeObjectURL(url);
         } catch (_) {}
         if (voiceState.currentAudio === audio) voiceState.currentAudio = null;
-      };
-
-      audio.onended = () => {
-        cleanup();
         resolve();
       };
-      audio.onerror = () => {
-        cleanup();
-        reject(new Error('audio 播放失败'));
+      const finishErr = (e) => {
+        if (settled) return;
+        settled = true;
+        detach();
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {}
+        if (voiceState.currentAudio === audio) voiceState.currentAudio = null;
+        reject(e);
       };
-      audio.addEventListener('pause', () => {
+
+      function onEnded() {
+        finishOk();
+      }
+      function onErr() {
+        finishErr(new Error('audio 播放失败'));
+      }
+      function onPause() {
         if (audio.ended) return;
-        if (!voiceState.isSpeaking) {
-          cleanup();
-          resolve();
-        }
-      });
+        if (!voiceState.isSpeaking) finishOk();
+      }
+
+      audio.addEventListener('ended', onEnded);
+      audio.addEventListener('error', onErr);
+      audio.addEventListener('pause', onPause);
 
       voiceState.currentAudio = audio;
+
+      try {
+        audio.pause();
+      } catch (_) {}
+      audio.src = url;
+      try {
+        audio.muted = false;
+      } catch (_) {}
+      try {
+        audio.load();
+      } catch (_) {}
+
       unlockMobileAudioPlayback();
+
       audio
         .play()
         .catch(() => {
           unlockMobileAudioPlayback();
+          primeSharedPlaybackAudioFromGesture();
           return audio.play();
         })
-        .catch(reject);
+        .catch((e) =>
+          finishErr(e instanceof Error ? e : new Error(typeof e === 'string' ? e : 'audio.play 被拒绝'))
+        );
     });
   }
 
@@ -822,7 +672,6 @@ function speakViaLocal(text, item) {
 
     const utter = new SpeechSynthesisUtterance(text);
     const speaker = item.speakerName;
-    const gender = getCelebrityGender(speaker);
     const cfg = getCelebrityVoiceConfig(speaker);
 
     const voice = pickLocalVoiceForSpeaker(speaker);
@@ -839,9 +688,12 @@ function speakViaLocal(text, item) {
     utter.pitch = Math.max(0.85, Math.min(1.15, pitch));
     utter.rate = Math.max(0.75, Math.min(1.22, rateMul));
 
-    console.log('🗣️ 本地语音:', {
+    try {
+      utter.volume = 1;
+    } catch (_) {}
+
+    console.log('🗣️ 本地语音（统一女声）:', {
       speaker,
-      gender,
       voice: utter.voice ? utter.voice.name : 'default',
       pitch: utter.pitch,
       rate: utter.rate,
@@ -861,6 +713,9 @@ function speakViaLocal(text, item) {
     voiceState.currentUtterance = utter;
     try { speechSynthesis.cancel(); } catch (_) {}
     speechSynthesis.speak(utter);
+    try {
+      if (speechSynthesis.paused) speechSynthesis.resume();
+    } catch (_) {}
   });
 }
 
@@ -961,7 +816,14 @@ window.setVoicePitch = setVoicePitch;
 window.setUseEdgeTTS = setUseEdgeTTS;
 window.unlockMobileAudioPlayback = unlockMobileAudioPlayback;
 
-// 风玲语音风格预设（仅用于本地回退模式下的 pitch/rate 微调）
+/** 气泡朗读按钮 touchstart/pointerdown：重置解锁标记并再走一遍移动端音频解锁（须与用户触碰同栈） */
+function primeVoicePlaybackFromBubble() {
+  voiceState.sharedPlaybackPrimed = false;
+  unlockMobileAudioPlayback();
+}
+window.primeVoicePlaybackFromBubble = primeVoicePlaybackFromBubble;
+
+// 风玲语音风格预设（作用于统一女声 pitch/rate）
 window.FENGLING_VOICE_STYLES = {
   '知性优雅': { pitch: 1.05, rate: 1.00 },
   '温柔甜美': { pitch: 1.10, rate: 0.95 },
@@ -972,9 +834,9 @@ window.FENGLING_VOICE_STYLES = {
 
 function setFenglingVoiceStyle(styleName) {
   const style = window.FENGLING_VOICE_STYLES[styleName];
-  if (style && CELEBRITY_VOICE_PROFILES['风玲']) {
-    CELEBRITY_VOICE_PROFILES['风玲'] = style;
-    console.log('✅ 风玲语音风格已设置为:', styleName, style);
+  if (style) {
+    Object.assign(CELEBRITY_VOICE_PROFILES.default_female, style);
+    console.log('✅ 统一女声语调已设置为:', styleName, style);
   }
 }
 window.setFenglingVoiceStyle = setFenglingVoiceStyle;

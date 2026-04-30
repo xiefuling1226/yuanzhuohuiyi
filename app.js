@@ -2201,6 +2201,18 @@ async function handleSend() {
 }
 
 // ========== 添加用户消息 ==========
+/** 气泡朗读：在 pointerdown/touchstart 尽早解锁音频（满足移动端手势策略） */
+function bindBubbleVoicePlaybackPrimers(voiceBtn) {
+  if (!voiceBtn) return;
+  const prime = () => {
+    if (typeof window.primeVoicePlaybackFromBubble === 'function') {
+      window.primeVoicePlaybackFromBubble();
+    }
+  };
+  voiceBtn.addEventListener('pointerdown', prime, { passive: true });
+  voiceBtn.addEventListener('touchstart', prime, { passive: true });
+}
+
 function addUserMessage(content) {
   const msgDiv = document.createElement('div');
   msgDiv.className = 'message user';
@@ -2271,6 +2283,7 @@ function addSpeakerMessage(speakerName, content, celebrityKey) {
   
   // 绑定语音按钮事件
   const voiceBtn = msgDiv.querySelector('.msg-voice-btn');
+  bindBubbleVoicePlaybackPrimers(voiceBtn);
   voiceBtn.addEventListener('click', () => {
     const btn = voiceBtn;
     const isPlaying = btn.classList.contains('playing');
@@ -2280,6 +2293,9 @@ function addSpeakerMessage(speakerName, content, celebrityKey) {
       console.log('⏹️ 停止播放');
       if (typeof stopSpeaking === 'function') stopSpeaking();
     } else {
+      if (typeof window.primeVoicePlaybackFromBubble === 'function') {
+        window.primeVoicePlaybackFromBubble();
+      }
       // 开始自动连续播放（从当前消息开始）
       console.log('▶️ 开始自动连续播放:', speakerName);
       
@@ -2357,6 +2373,7 @@ function createStreamMessage(speakerName, celebrityKey, insertAfterEl = null) {
   
   // 绑定语音按钮事件（初始为禁用状态，等待内容填充后启用）
   const voiceBtn = msgDiv.querySelector('.msg-voice-btn');
+  bindBubbleVoicePlaybackPrimers(voiceBtn);
   voiceBtn.addEventListener('click', () => {
     const btn = voiceBtn;
     const bubble = msgDiv.querySelector('.message-bubble');
@@ -2373,6 +2390,9 @@ function createStreamMessage(speakerName, celebrityKey, insertAfterEl = null) {
       console.log('⏹️ 停止播放');
       if (typeof stopSpeaking === 'function') stopSpeaking();
     } else {
+      if (typeof window.primeVoicePlaybackFromBubble === 'function') {
+        window.primeVoicePlaybackFromBubble();
+      }
       console.log('▶️ 开始自动连续播放:', speakerName);
       
       // 确保语音已启用
